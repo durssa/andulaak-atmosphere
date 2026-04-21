@@ -143,14 +143,29 @@ function getDayIcon(d) {
   return "☀️";
 }
 
+// Shared across all useYouTubeAPI callers so both players get notified
+const _ytCallbacks = new Set();
+let _ytScriptLoaded = false;
+let _ytApiReady = false;
+
 function useYouTubeAPI() {
-  const [ready, setReady] = useState(!!window.YT?.Player);
+  const [ready, setReady] = useState(_ytApiReady);
   useEffect(() => {
-    if (window.YT?.Player) { setReady(true); return; }
-    const tag = document.createElement("script");
-    tag.src = "https://www.youtube.com/iframe_api";
-    document.head.appendChild(tag);
-    window.onYouTubeIframeAPIReady = () => setReady(true);
+    if (_ytApiReady) { setReady(true); return; }
+    const cb = () => setReady(true);
+    _ytCallbacks.add(cb);
+    if (!_ytScriptLoaded) {
+      _ytScriptLoaded = true;
+      const tag = document.createElement("script");
+      tag.src = "https://www.youtube.com/iframe_api";
+      document.head.appendChild(tag);
+      window.onYouTubeIframeAPIReady = () => {
+        _ytApiReady = true;
+        _ytCallbacks.forEach(fn => fn());
+        _ytCallbacks.clear();
+      };
+    }
+    return () => _ytCallbacks.delete(cb);
   }, []);
   return ready;
 }
