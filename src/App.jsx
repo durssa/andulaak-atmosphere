@@ -197,9 +197,18 @@ function useYTPlayer(containerId, videoId, volume, isPlaying) {
       playerVars: { autoplay: 1, loop: 1, playlist: videoId, controls: 0, modestbranding: 1 },
       events: {
         onReady(e) {
-          e.target.setVolume(volRef.current);
-          if (playRef.current) e.target.playVideo();
-          else e.target.pauseVideo();
+          if (playRef.current) {
+            // Mute first so browser autoplay policy allows the video to start,
+            // then immediately unmute at the intended volume.
+            e.target.mute();
+            e.target.playVideo();
+            setTimeout(() => {
+              e.target.unMute();
+              e.target.setVolume(volRef.current);
+            }, 250);
+          } else {
+            e.target.setVolume(volRef.current);
+          }
         },
       },
     });
@@ -849,7 +858,7 @@ export default function App() {
             {
               label: "Music Track",
               input: musicInput, setInput: setMusicInput,
-              onLoad: () => updateSceneUrl("musicUrl", musicInput),
+              onLoad: () => { updateSceneUrl("musicUrl", musicInput); setIsPlaying(true); },
               onClear: () => { updateSceneUrl("musicUrl", ""); setMusicInput(""); },
               hasId: !!musicId, containerId: "music-player",
               hint: activeScene?.musicHint ?? "fantasy epic music 1 hour",
@@ -857,7 +866,7 @@ export default function App() {
             {
               label: "Ambient Sound",
               input: ambientInput, setInput: setAmbientInput,
-              onLoad: () => updateSceneUrl("ambientUrl", ambientInput),
+              onLoad: () => { updateSceneUrl("ambientUrl", ambientInput); setIsPlaying(true); },
               onClear: () => { updateSceneUrl("ambientUrl", ""); setAmbientInput(""); },
               hasId: !!ambientId, containerId: "ambient-player",
               hint: activeScene?.ambientHint ?? "ambient sound 1 hour",
