@@ -45,7 +45,43 @@ const DEFAULT_SCENES = [
   { id:"dark",    name:"Unknown Dark",     icon:"🌑", color:"#040404", particle:"ash",   calm:"Distant drips, deep silence",       tense:"Low drones, heartbeat bass",      musicHint:"dark dungeon horror",        ambientHint:"cave drips darkness" },
 ];
 const DEFAULT_SOUNDBOARD = Array.from({ length: 8 }, () => ({ name:"", icon:"♦", url:"" }));
-const EMPTY_SDATA = { musicUrl:"", ambientUrl:"", bgImage:null, notes:"" };
+const EMPTY_SDATA = { musicUrl:"", ambientUrl:"", bgImage:null, notes:"", spotifyUrl:"" };
+
+// ─── Spotify constants ────────────────────────────────────────────────────
+const SPOTIFY_CLIENT_ID  = "96b844a4f9a141929ee518cac9a33137";
+const SPOTIFY_REDIRECT   = typeof window !== "undefined" ? window.location.origin : "";
+const SPOTIFY_SCOPES     = "streaming user-read-email user-read-private";
+
+// ─── Spotify PKCE helpers ─────────────────────────────────────────────────
+async function spVerifier() {
+  const arr = new Uint8Array(32);
+  crypto.getRandomValues(arr);
+  return btoa(String.fromCharCode(...arr)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"");
+}
+async function spChallenge(v) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(v));
+  return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"");
+}
+async function spFetchToken(params) {
+  const r = await fetch("https://accounts.spotify.com/api/token", {
+    method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body: new URLSearchParams(params),
+  });
+  return r.json();
+}
+function parseSpotifyUrl(input) {
+  if (!input?.trim()) return null;
+  try {
+    if (input.startsWith("spotify:")) {
+      const p = input.split(":");
+      return { type:p[1], uri:input };
+    }
+    const url = new URL(input);
+    const p = url.pathname.split("/").filter(Boolean);
+    if (p.length >= 2) return { type:p[0], uri:`spotify:${p[0]}:${p[1]}` };
+  } catch {}
+  return null;
+}
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 function hexToTint(hex) {
@@ -160,6 +196,130 @@ function useSfxPlayer(containerId) {
     if (!ref.current) return;
     try { ref.current.loadVideoById(videoId); ref.current.setVolume(volume); } catch {}
   }, []);
+}
+
+// ─── Spotify auth hook ────────────────────────────────────────────────────
+function useSpotifyAuth() {
+  const stored = localStorage.getItem("sp_token");
+  const exp    = Number(localStorage.getItem("sp_expires") || 0);
+  const [token, setToken] = useState(stored && Date.now() < exp ? stored : null);
+  const [loading, setLoading] = useState(false);
+
+  // Handle redirect callback (code in URL after Spotify auth)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    if (!code) return;
+    window.history.replaceState({}, "", "/");
+    const verifier = localStorage.getItem("sp_verifier");
+    if (!verifier) return;
+    setLoading(true);
+    spFetchToken({ client_id:SPOTIFY_CLIENT_ID, grant_type:"authorization_code", code, redirect_uri:SPOTIFY_REDIRECT, code_verifier:verifier })
+      .then(d => {
+        if (d.access_token) {
+          localStorage.setItem("sp_token", d.access_token);
+          localStorage.setItem("sp_refresh", d.refresh_token);
+          localStorage.setItem("sp_expires", String(Date.now() + (d.expires_in - 60) * 1000));
+          localStorage.removeItem("sp_verifier");
+          setToken(d.access_token);
+        }
+        setLoading(false);
+      }).catch(() => setLoading(false));
+  }, []);
+
+  // Auto-refresh before expiry
+  useEffect(() => {
+    if (!token) return;
+    const delay = Math.max(0, Number(localStorage.getItem("sp_expires")) - Date.now() - 60000);
+    const id = setTimeout(async () => {
+      const refresh = localStorage.getItem("sp_refresh");
+      if (!refresh) return;
+      const d = await spFetchToken({ client_id:SPOTIFY_CLIENT_ID, grant_type:"refresh_token", refresh_token:refresh });
+      if (d.access_token) {
+        localStorage.setItem("sp_token", d.access_token);
+        localStorage.setItem("sp_expires", String(Date.now() + (d.expires_in - 60) * 1000));
+        if (d.refresh_token) localStorage.setItem("sp_refresh", d.refresh_token);
+        setToken(d.access_token);
+      }
+    }, delay);
+    return () => clearTimeout(id);
+  }, [token]);
+
+  async function login() {
+    const v = await spVerifier();
+    const c = await spChallenge(v);
+    localStorage.setItem("sp_verifier", v);
+    const p = new URLSearchParams({ client_id:SPOTIFY_CLIENT_ID, response_type:"code", redirect_uri:SPOTIFY_REDIRECT, scope:SPOTIFY_SCOPES, code_challenge_method:"S256", code_challenge:c });
+    window.location.href = `https://accounts.spotify.com/authorize?${p}`;
+  }
+
+  function logout() {
+    ["sp_token","sp_refresh","sp_expires","sp_verifier"].forEach(k => localStorage.removeItem(k));
+    setToken(null);
+  }
+
+  return { token, isConnected:!!token, loading, login, logout };
+}
+
+// ─── Spotify player hook ──────────────────────────────────────────────────
+function useSpotifyPlayer(token) {
+  const [ready, setReady]               = useState(false);
+  const [currentTrack, setCurrentTrack] = useState(null);
+  const playerRef   = useRef(null);
+  const deviceIdRef = useRef(null);
+  const tokenRef    = useRef(token);
+  useEffect(() => { tokenRef.current = token; }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+
+    function initPlayer() {
+      if (playerRef.current) return;
+      const player = new window.Spotify.Player({
+        name: "Andulaak Atmosphere Board",
+        getOAuthToken: cb => cb(tokenRef.current),
+        volume: 0.6,
+      });
+      player.addListener("ready", ({ device_id }) => { deviceIdRef.current = device_id; setReady(true); });
+      player.addListener("not_ready", () => setReady(false));
+      player.addListener("player_state_changed", s => {
+        if (s?.track_window?.current_track) setCurrentTrack(s.track_window.current_track);
+      });
+      player.connect();
+      playerRef.current = player;
+    }
+
+    if (window.Spotify?.Player) {
+      initPlayer();
+    } else {
+      window.onSpotifyWebPlaybackSDKReady = initPlayer;
+      if (!document.querySelector('script[src*="spotify-player"]')) {
+        const tag = document.createElement("script");
+        tag.src = "https://sdk.scdn.co/spotify-player.js";
+        document.head.appendChild(tag);
+      }
+    }
+
+    return () => { playerRef.current?.disconnect(); playerRef.current = null; setReady(false); };
+  }, [token]);
+
+  async function play(uri) {
+    if (!deviceIdRef.current) return;
+    const parsed = parseSpotifyUrl(uri);
+    if (!parsed) return;
+    const isTrack = parsed.type === "track";
+    await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceIdRef.current}`, {
+      method:"PUT",
+      headers:{ Authorization:`Bearer ${tokenRef.current}`, "Content-Type":"application/json" },
+      body: JSON.stringify(isTrack ? { uris:[parsed.uri] } : { context_uri:parsed.uri }),
+    });
+  }
+
+  function pause()        { playerRef.current?.pause(); }
+  function resume()       { playerRef.current?.resume(); }
+  function setVol(v)      { playerRef.current?.setVolume(v / 100); }
+
+  return { ready, currentTrack, play, pause, resume, setVol };
 }
 
 async function compressImage(file) {
@@ -536,7 +696,7 @@ function StageScreen({ scenes, sceneData, activeSceneId, onSceneClick, tension, 
   );
 }
 
-function AudioScreen({ activeScene, sceneData, musicId, ambientId, musicVol, setMusicVol, ambientVol, setAmbientVol, sfxVol, setSfxVol, isPlaying, soundboard, setSoundboard, onLoadMusic, onLoadAmbient, onClearMusic, onClearAmbient, musicInput, setMusicInput, ambientInput, setAmbientInput, triggerSfx, editingSfxIdx, setEditingSfxIdx }) {
+function AudioScreen({ activeScene, sceneData, musicId, ambientId, musicVol, setMusicVol, ambientVol, setAmbientVol, sfxVol, setSfxVol, spotifyVol, setSpotifyVol, isPlaying, soundboard, setSoundboard, onLoadMusic, onLoadAmbient, onClearMusic, onClearAmbient, musicInput, setMusicInput, ambientInput, setAmbientInput, triggerSfx, editingSfxIdx, setEditingSfxIdx, spotifyAuth, spotifyPlayer, spotifyInput, setSpotifyInput, onLoadSpotify }) {
   const [showSfxPlayer, setShowSfxPlayer] = useState(false);
 
   function playSfx(slot) {
@@ -610,6 +770,63 @@ function AudioScreen({ activeScene, sceneData, musicId, ambientId, musicVol, set
           </div>
         )}
         {!showSfxPlayer&&<div id="sfx-player" style={{ display:"none" }}/>}
+      </Card>
+
+      {/* ── Spotify ── */}
+      <Card style={{ marginTop:14 }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
+          <div>
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.18em",color:C.gold,textTransform:"uppercase" }}>Spotify</div>
+              {spotifyPlayer.ready&&<div style={{ width:7,height:7,borderRadius:"50%",background:"#1db954",boxShadow:"0 0 6px #1db954" }}/>}
+            </div>
+            {spotifyPlayer.currentTrack&&(
+              <div style={{ fontSize:12,color:C.goldDim,fontStyle:"italic",marginTop:3 }}>
+                ♪ {spotifyPlayer.currentTrack.name} — {spotifyPlayer.currentTrack.artists?.[0]?.name}
+              </div>
+            )}
+          </div>
+          {spotifyAuth.isConnected&&(
+            <Btn variant="ghost" onClick={spotifyAuth.logout} style={{ fontSize:9,color:"rgba(180,80,80,0.7)" }}>Disconnect</Btn>
+          )}
+        </div>
+
+        {!spotifyAuth.isConnected ? (
+          <div style={{ textAlign:"center",padding:"20px 16px" }}>
+            <div style={{ fontSize:13,color:C.goldDim,marginBottom:16,lineHeight:1.6 }}>
+              Connect your Spotify Premium account to play any track, playlist, or album directly in the app — with full volume control.
+            </div>
+            <Btn variant="primary" onClick={spotifyAuth.login} style={{ fontSize:11 }}>
+              {spotifyAuth.loading ? "Connecting…" : "Connect Spotify →"}
+            </Btn>
+          </div>
+        ) : !spotifyPlayer.ready ? (
+          <div style={{ textAlign:"center",padding:"14px",color:C.goldDim,fontSize:13,fontStyle:"italic" }}>
+            Initialising Spotify player…
+          </div>
+        ) : (
+          <>
+            <div style={{ display:"flex",gap:8,marginBottom:8 }}>
+              <TextInput
+                value={spotifyInput}
+                onChange={e=>setSpotifyInput(e.target.value)}
+                onKeyDown={e=>e.key==="Enter"&&onLoadSpotify()}
+                placeholder="Spotify playlist, album, or track URL…"
+              />
+              <Btn variant="primary" onClick={onLoadSpotify} style={{ whiteSpace:"nowrap",flexShrink:0 }}>Play</Btn>
+            </div>
+            <div style={{ fontSize:11,color:C.goldFaint,fontStyle:"italic",marginBottom:14 }}>
+              Paste any open.spotify.com URL — track, playlist, or album
+            </div>
+            <div style={{ display:"flex",gap:12,alignItems:"center" }}>
+              <RangeWithTrack id="spvol" label="Volume" value={spotifyVol} onChange={v=>{ setSpotifyVol(v); spotifyPlayer.setVol(v); }}/>
+              <div style={{ display:"flex",gap:8,flexShrink:0 }}>
+                <Btn variant="default" onClick={spotifyPlayer.resume} style={{ fontSize:13,padding:"8px 12px" }}>▶</Btn>
+                <Btn variant="default" onClick={spotifyPlayer.pause}  style={{ fontSize:13,padding:"8px 12px" }}>⏸</Btn>
+              </div>
+            </div>
+          </>
+        )}
       </Card>
     </div>
   );
@@ -1081,6 +1298,7 @@ export default function App() {
   const [soundboard, setSoundboard]       = useLocalStorage("andulaak_soundboard", DEFAULT_SOUNDBOARD);
   const [presets, setPresets]             = useLocalStorage("andulaak_presets", DEFAULT_PRESETS);
   const [sessionPlan, setSessionPlan]     = useLocalStorage("andulaak_plan", []);
+  const [spotifyVol, setSpotifyVol]       = useLocalStorage("andulaak_spotifyVol", 70);
   const [activeTab, setActiveTab]         = useLocalStorage("andulaak_tab", "stage");
 
   const [isPlaying, setIsPlaying]     = useState(false);
@@ -1092,7 +1310,10 @@ export default function App() {
   const [editingPreset, setEditPreset]= useState(null);
   const [musicInput, setMusicInput]   = useState("");
   const [ambientInput, setAmbientInput]=useState("");
-  const timer = useTimer();
+  const [spotifyInput, setSpotifyInput]=useState("");
+  const timer        = useTimer();
+  const spotifyAuth  = useSpotifyAuth();
+  const spotifyPlayer= useSpotifyPlayer(spotifyAuth.token);
 
   const musicVolRef   = useRef(musicVol);
   const ambientVolRef = useRef(ambientVol);
@@ -1165,6 +1386,19 @@ export default function App() {
     if(!activeSceneId) return;
     setSceneData(prev=>({...prev,[activeSceneId]:{...(prev[activeSceneId]??EMPTY_SDATA),[field]:value}}));
   }
+
+  function handleLoadSpotify() {
+    if (!spotifyInput.trim()) return;
+    updateSceneUrl("spotifyUrl", spotifyInput);
+    spotifyPlayer.play(spotifyInput);
+  }
+
+  // Restore Spotify URL input when scene changes
+  useEffect(() => {
+    if (!activeSceneId) return;
+    const sd = sceneDataRef.current[activeSceneId] ?? EMPTY_SDATA;
+    setSpotifyInput(sd.spotifyUrl || "");
+  }, [activeSceneId]);
 
   function saveScene(form) {
     if(!form.name.trim()) return;
@@ -1285,6 +1519,7 @@ export default function App() {
               musicVol={musicVol} setMusicVol={setMusicVol}
               ambientVol={ambientVol} setAmbientVol={setAmbientVol}
               sfxVol={sfxVol} setSfxVol={setSfxVol}
+              spotifyVol={spotifyVol} setSpotifyVol={setSpotifyVol}
               isPlaying={isPlaying} soundboard={soundboard} setSoundboard={setSoundboard}
               onLoadMusic={()=>{ updateSceneUrl("musicUrl",musicInput); setIsPlaying(true); }}
               onLoadAmbient={()=>{ updateSceneUrl("ambientUrl",ambientInput); setIsPlaying(true); }}
@@ -1294,6 +1529,9 @@ export default function App() {
               ambientInput={ambientInput} setAmbientInput={setAmbientInput}
               triggerSfx={triggerSfx}
               editingSfxIdx={editingSfxIdx} setEditingSfxIdx={setEditSfx}
+              spotifyAuth={spotifyAuth} spotifyPlayer={spotifyPlayer}
+              spotifyInput={spotifyInput} setSpotifyInput={setSpotifyInput}
+              onLoadSpotify={handleLoadSpotify}
             />
           )}
           {activeTab==="notes"&&(
