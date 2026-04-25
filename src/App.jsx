@@ -10,12 +10,25 @@ const C = {
   gold:        "#e8d9a0",   // primary text  — ~10:1 on bg
   goldMid:     "#c4b78a",   // secondary text — ~7:1 on bg
   goldDim:     "#9a8a72",   // tertiary text  — ~5:1 on bg
-  goldFaint:   "#6a5a48",   // placeholders   — ~3:1 on bg
+  goldFaint:   "#8a7a62",   // placeholders   — ~4:1 on bg
 };
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 const PARTICLE_TYPES = ["rain", "ember", "dust", "snow", "ash"];
-const DARK_PALETTE   = ["#060e18","#080f04","#120800","#0a0a06","#140c02","#0e0204","#04060e","#040404","#0a060e","#120a04"];
+const DARK_PALETTE = [
+  { hex:"#060e18", label:"Ocean" },
+  { hex:"#080f04", label:"Forest" },
+  { hex:"#120800", label:"Ember" },
+  { hex:"#0a0a06", label:"Road" },
+  { hex:"#140c02", label:"Tavern" },
+  { hex:"#0e0204", label:"Blood" },
+  { hex:"#04060e", label:"Void" },
+  { hex:"#040404", label:"Abyss" },
+  { hex:"#1a0a1a", label:"Shadow" },
+  { hex:"#0a1218", label:"Frost" },
+  { hex:"#1a1000", label:"Gold" },
+  { hex:"#0f0800", label:"Copper" },
+];
 const TABS = [
   { id: "stage",  label: "Stage" },
   { id: "audio",  label: "Audio" },
@@ -435,7 +448,15 @@ function useSpotifyPlayer(token) {
   const artistName = currentTrack?.artists?.[0]?.name;
   const albumName  = currentTrack?.album?.name;
 
-  return { ready, currentTrack, nextTracks, isPaused, shuffle, repeat, isLiked, position, duration, albumArt, artistName, albumName, play, pause, resume, setVol, skipNext, skipPrev, toggleShuffle, toggleRepeat, toggleLike, addToQueue, getMyPlaylists, getRecentlyPlayed, seek, search };
+  async function refreshQueue() {
+    if (!tokenRef.current) return;
+    const r = await fetch("https://api.spotify.com/v1/me/player/queue", {
+      headers:{ Authorization:`Bearer ${tokenRef.current}` }
+    });
+    if (r.ok) { const d = await r.json(); if (d?.queue) setNextTracks(d.queue.slice(0,10)); }
+  }
+
+  return { ready, currentTrack, nextTracks, isPaused, shuffle, repeat, isLiked, position, duration, albumArt, artistName, albumName, play, pause, resume, setVol, skipNext, skipPrev, toggleShuffle, toggleRepeat, toggleLike, addToQueue, getMyPlaylists, getRecentlyPlayed, seek, search, refreshQueue };
 }
 
 async function compressImage(file) {
@@ -522,10 +543,10 @@ function Label({ children, htmlFor }) {
 function Btn({ children, onClick, variant="default", disabled=false, style={} }) {
   const base = { fontFamily:"Cinzel,serif", fontSize:10, letterSpacing:"0.12em", textTransform:"uppercase", cursor:disabled?"not-allowed":"pointer", padding:"9px 18px", borderRadius:7, transition:"all 0.2s", border:"none", outline:"none", display:"inline-flex", alignItems:"center", gap:6 };
   const variants = {
-    default: { background:C.surfaceHigh, color:C.goldMid, border:`1px solid ${C.border}` },
-    primary: { background:"rgba(232,217,160,0.12)", color:C.gold, border:`1px solid rgba(232,217,160,0.35)` },
-    danger:  { background:"rgba(180,40,40,0.12)", color:"#e87878", border:"1px solid rgba(180,40,40,0.3)" },
-    ghost:   { background:"transparent", color:C.goldDim, border:`1px solid transparent` },
+    default: { background:C.surfaceHigh, color:C.goldMid,  border:`1px solid ${C.border}` },
+    primary: { background:"rgba(232,217,160,0.14)", color:C.gold,   border:`1px solid rgba(232,217,160,0.4)` },
+    danger:  { background:"rgba(180,40,40,0.18)",   color:"#f08080", border:"1px solid rgba(180,40,40,0.45)" },
+    ghost:   { background:"transparent",             color:C.goldMid, border:`1px solid ${C.border}` },
   };
   return <button onClick={disabled?undefined:onClick} style={{ ...base, ...variants[variant], opacity:disabled?0.4:1, ...style }}>{children}</button>;
 }
@@ -604,11 +625,15 @@ function SceneModal({ scene, onSave, onDelete, onClose }) {
       <div style={{ marginBottom:20 }}>
         <Label>Atmosphere Color</Label>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
-          {DARK_PALETTE.map(c=>(
-            <div key={c} onClick={()=>u("color",c)} style={{ width:32,height:32,borderRadius:7,background:c,border:`2px solid ${f.color===c?"rgba(232,217,160,0.8)":C.border}`,cursor:"pointer",transition:"border-color 0.15s",flexShrink:0 }} title={c}/>
+          {DARK_PALETTE.map(({hex,label})=>(
+            <div key={hex} onClick={()=>u("color",hex)} title={label}
+              style={{ width:44,height:44,borderRadius:8,background:hex,border:`2px solid ${f.color===hex?"rgba(232,217,160,0.9)":C.border}`,cursor:"pointer",transition:"border-color 0.15s",flexShrink:0,display:"flex",alignItems:"flex-end",justifyContent:"center",paddingBottom:4 }}>
+              <span style={{ fontSize:7,color:"rgba(255,255,255,0.5)",fontFamily:"Cinzel,serif",letterSpacing:"0.04em",textTransform:"uppercase" }}>{label}</span>
+            </div>
           ))}
-          <div>
-            <input type="color" value={f.color} onChange={e=>u("color",e.target.value)} style={{ width:32,height:32,borderRadius:7,border:`1px solid ${C.border}`,cursor:"pointer",background:"none",padding:0,verticalAlign:"middle" }} />
+          <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:3 }}>
+            <input type="color" value={f.color} onChange={e=>u("color",e.target.value)} style={{ width:44,height:44,borderRadius:8,border:`1px solid ${C.border}`,cursor:"pointer",background:"none",padding:0 }} />
+            <span style={{ fontSize:7,color:C.goldFaint,fontFamily:"Cinzel,serif" }}>Custom</span>
           </div>
         </div>
       </div>
@@ -868,60 +893,11 @@ function AudioScreen({ activeScene, sceneData, musicId, ambientId, musicVol, set
   }
 
   return (
-    <div style={{ display:"flex", flexDirection:"column", height:"100%", gap:8 }}>
+    // Two-column: Spotify gets the full left half, YouTube+controls on the right
+    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, height:"100%", minHeight:0 }}>
 
-      {/* YouTube tracks — side by side, compact */}
-      <div style={{ flexShrink:0, display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-        <CompactYTPanel label="Music Track" input={musicInput} setInput={setMusicInput} onLoad={onLoadMusic} onClear={onClearMusic} hasId={!!musicId} containerId="music-player" hint={activeScene?.musicHint??"fantasy epic music 1 hour"}/>
-        <CompactYTPanel label="Ambient Sound" input={ambientInput} setInput={setAmbientInput} onLoad={onLoadAmbient} onClear={onClearAmbient} hasId={!!ambientId} containerId="ambient-player" hint={activeScene?.ambientHint??"ambient sound 1 hour"}/>
-      </div>
-
-      {/* Volume + Soundboard — one row */}
-      <div style={{ flexShrink:0, display:"grid", gridTemplateColumns:"auto 1fr", gap:8, alignItems:"start" }}>
-        {/* Volumes */}
-        <Card style={{ padding:"10px 14px" }}>
-          <div style={{ fontFamily:"Cinzel,serif",fontSize:8,letterSpacing:"0.15em",color:C.goldDim,textTransform:"uppercase",marginBottom:8 }}>Volume</div>
-          <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:14,minWidth:280 }}>
-            <RangeWithTrack id="mv" label="Music"   value={musicVol}   onChange={setMusicVol}/>
-            <RangeWithTrack id="av" label="Ambient" value={ambientVol} onChange={setAmbientVol}/>
-            <RangeWithTrack id="sv" label="SFX"     value={sfxVol}     onChange={setSfxVol}/>
-          </div>
-        </Card>
-        {/* Soundboard */}
-        <Card style={{ padding:"10px 12px" }}>
-          <div style={{ fontFamily:"Cinzel,serif",fontSize:8,letterSpacing:"0.15em",color:C.goldDim,textTransform:"uppercase",marginBottom:8 }}>
-            Soundboard <span style={{ fontSize:7,color:C.goldFaint,textTransform:"none",marginLeft:4 }}>✎ to set up</span>
-          </div>
-          <div style={{ display:"grid",gridTemplateColumns:"repeat(8,1fr)",gap:5 }}>
-            {soundboard.map((slot,i)=>{
-              const hasUrl = !!getYouTubeId(slot.url);
-              return (
-                <div key={i} style={{ position:"relative" }}>
-                  <button onClick={()=>hasUrl?playSfx(slot):setEditingSfxIdx(i)}
-                    style={{ width:"100%",background:hasUrl?"rgba(232,217,160,0.07)":C.surfaceHigh,border:`1px solid ${hasUrl?"rgba(232,217,160,0.22)":C.border}`,borderRadius:7,padding:"8px 4px",textAlign:"center",cursor:"pointer",transition:"all 0.2s",display:"flex",flexDirection:"column",alignItems:"center",gap:2,outline:"none" }}>
-                    <div style={{ fontSize:16 }}>{slot.icon||"♦"}</div>
-                    <div style={{ fontFamily:"Cinzel,serif",fontSize:7,color:hasUrl?C.goldMid:C.goldFaint,textTransform:"uppercase",lineHeight:1.2,maxWidth:50,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>{slot.name||"—"}</div>
-                  </button>
-                  <button onClick={()=>setEditingSfxIdx(i)} style={{ position:"absolute",top:2,right:2,fontSize:7,color:C.goldFaint,background:"transparent",border:"none",cursor:"pointer",padding:"1px",outline:"none" }}>✎</button>
-                </div>
-              );
-            })}
-          </div>
-          {showSfxPlayer&&(
-            <div style={{ marginTop:8 }}>
-              <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4 }}>
-                <div style={{ fontSize:8,fontFamily:"Cinzel,serif",color:C.goldFaint,textTransform:"uppercase",letterSpacing:"0.1em" }}>SFX</div>
-                <button onClick={()=>setShowSfxPlayer(false)} style={{ fontSize:9,color:C.goldFaint,background:"transparent",border:"none",cursor:"pointer",outline:"none" }}>✕</button>
-              </div>
-              <div style={{ height:50,borderRadius:6,overflow:"hidden" }}><div id="sfx-player" style={{ width:"100%",height:"100%" }}/></div>
-            </div>
-          )}
-          {!showSfxPlayer&&<div id="sfx-player" style={{ display:"none" }}/>}
-        </Card>
-      </div>
-
-      {/* Spotify — fills remaining height, results scroll internally */}
-      <div style={{ flex:1, minHeight:0, overflow:"hidden" }}>
+      {/* LEFT — Spotify, full height */}
+      <div style={{ minHeight:0, overflow:"hidden", display:"flex", flexDirection:"column" }}>
         <SpotifyPanel
           auth={spotifyAuth} player={spotifyPlayer}
           spotifyVol={spotifyVol} setSpotifyVol={setSpotifyVol}
@@ -930,6 +906,62 @@ function AudioScreen({ activeScene, sceneData, musicId, ambientId, musicVol, set
         />
       </div>
 
+      {/* RIGHT — YouTube + Volume + Soundboard stacked */}
+      <div style={{ display:"flex", flexDirection:"column", gap:8, minHeight:0 }}>
+
+        {/* Music Track */}
+        <CompactYTPanel label="Music Track" input={musicInput} setInput={setMusicInput}
+          onLoad={onLoadMusic} onClear={onClearMusic} hasId={!!musicId}
+          containerId="music-player" hint={activeScene?.musicHint??"fantasy epic music 1 hour"}/>
+
+        {/* Ambient Sound */}
+        <CompactYTPanel label="Ambient Sound" input={ambientInput} setInput={setAmbientInput}
+          onLoad={onLoadAmbient} onClear={onClearAmbient} hasId={!!ambientId}
+          containerId="ambient-player" hint={activeScene?.ambientHint??"ambient sound 1 hour"}/>
+
+        {/* Volume */}
+        <Card style={{ padding:"10px 14px", flexShrink:0 }}>
+          <div style={{ fontFamily:"Cinzel,serif",fontSize:8,letterSpacing:"0.15em",color:C.goldDim,textTransform:"uppercase",marginBottom:8 }}>Volume Mix</div>
+          <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12 }}>
+            <RangeWithTrack id="mv" label="Music"   value={musicVol}   onChange={setMusicVol}/>
+            <RangeWithTrack id="av" label="Ambient" value={ambientVol} onChange={setAmbientVol}/>
+            <RangeWithTrack id="sv" label="SFX"     value={sfxVol}     onChange={setSfxVol}/>
+          </div>
+        </Card>
+
+        {/* Soundboard */}
+        <Card style={{ padding:"10px 12px", flex:1, minHeight:0, display:"flex", flexDirection:"column" }}>
+          <div style={{ fontFamily:"Cinzel,serif",fontSize:8,letterSpacing:"0.15em",color:C.goldDim,textTransform:"uppercase",marginBottom:8,flexShrink:0 }}>
+            Soundboard <span style={{ fontSize:7,color:C.goldFaint,textTransform:"none",marginLeft:4 }}>click ✎ to configure slots</span>
+          </div>
+          <div style={{ display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,flex:1 }}>
+            {soundboard.map((slot,i)=>{
+              const hasUrl = !!getYouTubeId(slot.url);
+              return (
+                <div key={i} style={{ position:"relative" }}>
+                  <button onClick={()=>hasUrl?playSfx(slot):setEditingSfxIdx(i)}
+                    style={{ width:"100%",height:"100%",background:hasUrl?"rgba(232,217,160,0.07)":C.surfaceHigh,border:`1px solid ${hasUrl?"rgba(232,217,160,0.22)":C.border}`,borderRadius:8,padding:"8px 6px",textAlign:"center",cursor:"pointer",transition:"all 0.2s",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3,outline:"none" }}>
+                    <div style={{ fontSize:18 }}>{slot.icon||"♦"}</div>
+                    <div style={{ fontFamily:"Cinzel,serif",fontSize:8,color:hasUrl?C.goldMid:C.goldFaint,textTransform:"uppercase",lineHeight:1.2,width:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"center" }}>{slot.name||"—"}</div>
+                  </button>
+                  <button onClick={()=>setEditingSfxIdx(i)} style={{ position:"absolute",top:3,right:4,fontSize:8,color:C.goldFaint,background:"transparent",border:"none",cursor:"pointer",padding:"1px",outline:"none" }}>✎</button>
+                </div>
+              );
+            })}
+          </div>
+          {showSfxPlayer&&(
+            <div style={{ marginTop:8,flexShrink:0 }}>
+              <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4 }}>
+                <div style={{ fontSize:8,fontFamily:"Cinzel,serif",color:C.goldFaint,textTransform:"uppercase",letterSpacing:"0.1em" }}>SFX Player</div>
+                <button onClick={()=>setShowSfxPlayer(false)} style={{ fontSize:9,color:C.goldFaint,background:"transparent",border:"none",cursor:"pointer",outline:"none" }}>✕</button>
+              </div>
+              <div style={{ height:52,borderRadius:6,overflow:"hidden" }}><div id="sfx-player" style={{ width:"100%",height:"100%" }}/></div>
+            </div>
+          )}
+          {!showSfxPlayer&&<div id="sfx-player" style={{ display:"none" }}/>}
+        </Card>
+
+      </div>
     </div>
   );
 }
@@ -1115,17 +1147,29 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
         <RangeWithTrack id="spvol" label="Volume" value={spotifyVol} onChange={v=>{ setSpotifyVol(v); player.setVol(v); }} leftLabel="0" rightLabel="100"/>
       </div>
 
-      {/* Up Next queue */}
-      {player.nextTracks?.length>0&&(
-        <div style={{ marginBottom:16 }}>
-          <div style={{ fontSize:10,fontFamily:"Cinzel,serif",letterSpacing:"0.12em",color:C.goldDim,textTransform:"uppercase",marginBottom:8 }}>Up Next — {player.nextTracks.length} tracks</div>
-          <div style={{ background:C.surfaceHigh,borderRadius:9,overflow:"hidden" }}>
-            {player.nextTracks.map((t,i)=>(
-              <SpotifyTrackRow key={i} track={t} onPlay={playUri} onQueue={queueUri} showQueue={true}/>
-            ))}
+      {/* Up Next queue — always shown when connected */}
+      <div style={{ marginBottom:10, flexShrink:0 }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
+          <div style={{ fontSize:10,fontFamily:"Cinzel,serif",letterSpacing:"0.12em",color:C.goldDim,textTransform:"uppercase" }}>
+            Up Next {player.nextTracks?.length>0 ? `— ${player.nextTracks.length} tracks` : ""}
           </div>
+          <button onClick={player.refreshQueue}
+            style={{ fontSize:9,color:C.goldFaint,background:"transparent",border:`1px solid ${C.border}`,borderRadius:5,cursor:"pointer",padding:"3px 8px",outline:"none",fontFamily:"Cinzel,serif",letterSpacing:"0.06em" }}>
+            ↻ Refresh
+          </button>
         </div>
-      )}
+        <div style={{ background:C.surfaceHigh,borderRadius:9,overflow:"hidden",maxHeight:160,overflowY:"auto" }}>
+          {!player.nextTracks?.length ? (
+            <div style={{ padding:"12px 14px",textAlign:"center",color:C.goldFaint,fontSize:12,fontStyle:"italic" }}>
+              No queue · Start a playlist or album, then click Refresh
+            </div>
+          ) : (
+            player.nextTracks.map((t,i)=>(
+              <SpotifyTrackRow key={i} track={t} onPlay={playUri} onQueue={queueUri} showQueue={true}/>
+            ))
+          )}
+        </div>
+      </div>
 
       {/* Browse tabs */}
       {/* Browse — flex:1 so it fills remaining card height, results scroll inside */}
@@ -1296,12 +1340,12 @@ function ScenesScreen({ scenes, setScenes, sceneData, setSceneData, activeSceneI
   function clearImg(sid) { setSceneData(prev=>({...prev,[sid]:{...(prev[sid]??EMPTY_SDATA),bgImage:null}})); }
 
   return (
-    <div>
+    <div style={{ display:"flex", flexDirection:"column", height:"100%" }}>
       <input ref={fileInputRef} type="file" accept="image/*" onChange={handleUpload} style={{ display:"none" }}/>
       <input ref={importRef} type="file" accept=".json" onChange={handleImport} style={{ display:"none" }}/>
 
-      <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:10 }}>
-        <div style={{ fontSize:14,color:C.goldMid }}>Manage your campaign's scenes.</div>
+      <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8,flexShrink:0 }}>
+        <div style={{ fontSize:13,color:C.goldMid }}>Manage your campaign's scenes.</div>
         <div style={{ display:"flex",gap:8 }}>
           <Btn variant="ghost" onClick={()=>importRef.current.click()} style={{ fontSize:10 }}>Import ↑</Btn>
           <Btn variant="ghost" onClick={exportSettings} style={{ fontSize:10 }}>Export ↓</Btn>
@@ -1311,7 +1355,8 @@ function ScenesScreen({ scenes, setScenes, sceneData, setSceneData, activeSceneI
         </div>
       </div>
 
-      <div style={{ display:"flex",flexDirection:"column",gap:10 }}>
+      {/* Scrollable scene list */}
+      <div style={{ flex:1, minHeight:0, overflowY:"auto", display:"flex", flexDirection:"column", gap:8 }}>
         {scenes.map((s,idx)=>{
           const sd = sceneData[s.id]??{};
           const isActive = activeSceneId===s.id;
@@ -1760,10 +1805,12 @@ export default function App() {
   },[activeSceneId]);
 
   // Stable refs so the keyboard handler never has a stale closure
-  const scenesRef      = useRef(scenes);
-  const activeSceneRef = useRef(activeScene);
+  const scenesRef       = useRef(scenes);
+  const activeSceneRef  = useRef(activeScene);
+  const spotifyRef      = useRef(spotifyPlayer);
   useEffect(()=>{ scenesRef.current=scenes; },[scenes]);
   useEffect(()=>{ activeSceneRef.current=activeScene; },[activeScene]);
+  useEffect(()=>{ spotifyRef.current=spotifyPlayer; },[spotifyPlayer]);
 
   // Keyboard shortcuts — stable listener, reads state via refs
   useEffect(()=>{
@@ -1774,7 +1821,11 @@ export default function App() {
       if(e.key==="p"||e.key==="P") setPresent(true);
       if(e.key===" ") {
         e.preventDefault();
+        // Toggle YouTube players
         if(activeSceneRef.current) setIsPlaying(p=>!p);
+        // Also toggle Spotify if it's connected and ready
+        const sp = spotifyRef.current;
+        if(sp?.ready) { if(sp.isPaused) sp.resume(); else sp.pause(); }
       }
       const n=parseInt(e.key);
       if(!isNaN(n)&&n>=1&&n<=scenesRef.current.length) handleSceneClick(scenesRef.current[n-1]);
