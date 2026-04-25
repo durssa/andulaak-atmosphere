@@ -280,7 +280,10 @@ function useSpotifyPlayer(token) {
   const [nextTracks, setNextTracks]     = useState([]);
   const [isPaused, setIsPaused]         = useState(true);
   const [shuffle, setShuffle]           = useState(false);
-  const [repeat, setRepeat]             = useState("off"); // "off" | "context" | "track"
+  const [repeat, setRepeat]             = useState("off");
+  const [position, setPosition]         = useState(0);
+  const [duration, setDuration]         = useState(0);
+  const [isLiked, setIsLiked]           = useState(false);
   const playerRef   = useRef(null);
   const deviceIdRef = useRef(null);
   const tokenRef    = useRef(token);
@@ -302,8 +305,10 @@ function useSpotifyPlayer(token) {
         setIsPaused(s.paused);
         setShuffle(s.shuffle);
         setRepeat(s.repeat_mode === 0 ? "off" : s.repeat_mode === 1 ? "context" : "track");
+        setPosition(s.position);
+        setDuration(s.duration);
         if (s.track_window?.current_track) setCurrentTrack(s.track_window.current_track);
-        if (s.track_window?.next_tracks) setNextTracks(s.track_window.next_tracks.slice(0,3));
+        if (s.track_window?.next_tracks) setNextTracks(s.track_window.next_tracks);
       });
       player.connect();
       playerRef.current = player;
@@ -344,9 +349,26 @@ function useSpotifyPlayer(token) {
   }
   async function skipNext()  { await spApi("/me/player/next"); }
   async function skipPrev()  { await spApi("/me/player/previous"); }
+  // Poll position every second while playing
+  useEffect(() => {
+    if (isPaused || !playerRef.current) return;
+    const id = setInterval(async () => {
+      const s = await playerRef.current?.getCurrentState().catch(()=>null);
+      if (s) { setPosition(s.position); setDuration(s.duration); }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isPaused]);
+
+  // Check if current track is liked
+  useEffect(() => {
+    if (!currentTrack?.id || !tokenRef.current) return;
+    fetch(`https://api.spotify.com/v1/me/tracks/contains?ids=${currentTrack.id}`, {
+      headers:{ Authorization:`Bearer ${tokenRef.current}` }
+    }).then(r=>r.json()).then(d=>setIsLiked(!!d[0])).catch(()=>{});
+  }, [currentTrack?.id]);
+
   async function toggleShuffle() {
-    const next = !shuffle;
-    setShuffle(next);
+    const next = !shuffle; setShuffle(next);
     await spApi(`/me/player/shuffle?state=${next}`, "PUT");
   }
   async function toggleRepeat() {
@@ -355,6 +377,30 @@ function useSpotifyPlayer(token) {
     setRepeat(next);
     await spApi(`/me/player/repeat?state=${next}`, "PUT");
   }
+  async function toggleLike() {
+    if (!currentTrack?.id) return;
+    const method = isLiked ? "DELETE" : "PUT";
+    await fetch(`https://api.spotify.com/v1/me/tracks?ids=${currentTrack.id}`, {
+      method, headers:{ Authorization:`Bearer ${tokenRef.current}` }
+    });
+    setIsLiked(!isLiked);
+  }
+  async function addToQueue(uri) {
+    await spApi(`/me/player/queue?uri=${encodeURIComponent(uri)}`, "POST");
+  }
+  async function getMyPlaylists() {
+    const r = await fetch("https://api.spotify.com/v1/me/playlists?limit=25", {
+      headers:{ Authorization:`Bearer ${tokenRef.current}` }
+    });
+    return r.json();
+  }
+  async function getRecentlyPlayed() {
+    const r = await fetch("https://api.spotify.com/v1/me/player/recently-played?limit=12", {
+      headers:{ Authorization:`Bearer ${tokenRef.current}` }
+    });
+    return r.json();
+  }
+  function seek(ms) { playerRef.current?.seek(ms).catch(()=>{}); }
 
   function pause()   { playerRef.current?.pause(); }
   function resume()  { playerRef.current?.resume(); }
@@ -364,7 +410,7 @@ function useSpotifyPlayer(token) {
   const artistName = currentTrack?.artists?.[0]?.name;
   const albumName  = currentTrack?.album?.name;
 
-  return { ready, currentTrack, nextTracks, isPaused, shuffle, repeat, albumArt, artistName, albumName, play, pause, resume, setVol, skipNext, skipPrev, toggleShuffle, toggleRepeat, search };
+  return { ready, currentTrack, nextTracks, isPaused, shuffle, repeat, isLiked, position, duration, albumArt, artistName, albumName, play, pause, resume, setVol, skipNext, skipPrev, toggleShuffle, toggleRepeat, toggleLike, addToQueue, getMyPlaylists, getRecentlyPlayed, seek, search };
 }
 
 async function compressImage(file) {
@@ -861,195 +907,270 @@ function AudioScreen({ activeScene, sceneData, musicId, ambientId, musicVol, set
   );
 }
 
+function fmtMs(ms) {
+  const s = Math.floor(ms/1000);
+  return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;
+}
+
+function SpotifyTrackRow({ track, onPlay, onQueue, showQueue=false }) {
+  const art = track?.album?.images?.[2]?.url || track?.album?.images?.[0]?.url;
+  return (
+    <div style={{ display:"flex",alignItems:"center",gap:12,padding:"9px 14px",borderBottom:`1px solid ${C.border}`,transition:"background 0.15s" }}
+      onMouseEnter={e=>e.currentTarget.style.background="rgba(232,217,160,0.04)"}
+      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+      {art&&<img src={art} alt="" style={{ width:36,height:36,borderRadius:4,flexShrink:0 }}/>}
+      <div style={{ flex:1,minWidth:0 }}>
+        <div style={{ fontSize:13,color:C.gold,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis" }}>{track.name}</div>
+        <div style={{ fontSize:11,color:C.goldDim }}>{track.artists?.[0]?.name}</div>
+      </div>
+      <div style={{ display:"flex",gap:6,flexShrink:0 }}>
+        {showQueue&&<button onClick={()=>onQueue(track.uri)} title="Add to queue" style={{ background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,color:C.goldFaint,fontSize:10,cursor:"pointer",padding:"4px 8px",outline:"none" }}>+Q</button>}
+        <button onClick={()=>onPlay(track.uri)} style={{ background:"rgba(29,185,84,0.12)",border:"1px solid rgba(29,185,84,0.3)",borderRadius:6,color:"#1db954",fontSize:12,cursor:"pointer",padding:"4px 10px",outline:"none" }}>▶</button>
+      </div>
+    </div>
+  );
+}
+
+function SpotifyPlaylistRow({ pl, onPlay }) {
+  const art = pl?.images?.[0]?.url;
+  return (
+    <div style={{ display:"flex",alignItems:"center",gap:12,padding:"9px 14px",borderBottom:`1px solid ${C.border}`,transition:"background 0.15s" }}
+      onMouseEnter={e=>e.currentTarget.style.background="rgba(232,217,160,0.04)"}
+      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+      {art?<img src={art} alt="" style={{ width:36,height:36,borderRadius:4,flexShrink:0 }}/>:<div style={{ width:36,height:36,borderRadius:4,background:C.surfaceHigh,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16 }}>🎵</div>}
+      <div style={{ flex:1,minWidth:0 }}>
+        <div style={{ fontSize:13,color:C.gold,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis" }}>{pl.name}</div>
+        <div style={{ fontSize:11,color:C.goldDim }}>{pl.tracks?.total??pl.owner?.display_name} {pl.tracks?.total?"tracks":""}</div>
+      </div>
+      <button onClick={()=>onPlay(pl.uri)} style={{ background:"rgba(29,185,84,0.12)",border:"1px solid rgba(29,185,84,0.3)",borderRadius:6,color:"#1db954",fontSize:12,cursor:"pointer",padding:"4px 10px",outline:"none",flexShrink:0 }}>▶</button>
+    </div>
+  );
+}
+
 function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, setSpotifyInput, onLoadSpotify }) {
   const [searchQuery, setSearchQuery]   = useState("");
   const [searchResults, setSearchResults]=useState(null);
   const [searching, setSearching]       = useState(false);
+  const [myPlaylists, setMyPlaylists]   = useState(null);
+  const [recentlyPlayed, setRecentlyPlayed]=useState(null);
+  const [browseTab, setBrowseTab]       = useState("search"); // search | playlists | recent
 
   async function doSearch() {
     if (!searchQuery.trim()) return;
     setSearching(true);
     const data = await player.search(searchQuery);
-    setSearchResults(data);
-    setSearching(false);
+    setSearchResults(data); setSearching(false);
   }
 
-  function playResult(uri, name) {
-    player.play(uri);
-    setSearchResults(null);
-    setSearchQuery("");
-    setSpotifyInput(uri);
+  async function loadPlaylists() {
+    if (myPlaylists) return;
+    const d = await player.getMyPlaylists();
+    setMyPlaylists(d);
   }
+
+  async function loadRecent() {
+    if (recentlyPlayed) return;
+    const d = await player.getRecentlyPlayed();
+    setRecentlyPlayed(d);
+  }
+
+  function switchBrowse(tab) {
+    setBrowseTab(tab);
+    if (tab==="playlists") loadPlaylists();
+    if (tab==="recent") loadRecent();
+  }
+
+  function playUri(uri) { player.play(uri); setSpotifyInput(uri); setSearchResults(null); setSearchQuery(""); }
+  function queueUri(uri) { player.addToQueue(uri); }
+
+  if (!auth.isConnected) return (
+    <Card style={{ marginTop:14, textAlign:"center", padding:"32px 24px" }}>
+      <div style={{ fontSize:36,marginBottom:14 }}>🎵</div>
+      <div style={{ fontFamily:"Cinzel,serif",fontSize:15,color:C.gold,letterSpacing:"0.1em",marginBottom:8 }}>Spotify Premium</div>
+      <div style={{ fontSize:13,color:C.goldDim,marginBottom:22,lineHeight:1.7,maxWidth:380,margin:"0 auto 22px" }}>
+        Full playback control: search your entire library, browse playlists, skip tracks, like songs, see what's coming up — all from here.
+      </div>
+      <Btn variant="primary" onClick={auth.login} style={{ fontSize:12,padding:"12px 28px" }}>
+        {auth.loading?"Connecting…":"Connect Spotify →"}
+      </Btn>
+    </Card>
+  );
+
+  if (!player.ready) return (
+    <Card style={{ marginTop:14, textAlign:"center", padding:"24px" }}>
+      <div style={{ fontSize:13,color:C.goldDim,fontStyle:"italic" }}>Initialising Spotify player… <br/><span style={{ fontSize:11,color:C.goldFaint }}>This may take a few seconds.</span></div>
+    </Card>
+  );
+
+  const pct = player.duration > 0 ? player.position/player.duration : 0;
 
   return (
     <Card style={{ marginTop:14 }}>
       {/* Header */}
-      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16 }}>
-        <div style={{ display:"flex",alignItems:"center",gap:10 }}>
+      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14 }}>
+        <div style={{ display:"flex",alignItems:"center",gap:8 }}>
           <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.18em",color:C.gold,textTransform:"uppercase" }}>Spotify</div>
-          {player.ready&&<div style={{ width:7,height:7,borderRadius:"50%",background:"#1db954",boxShadow:"0 0 6px #1db954",flexShrink:0 }}/>}
+          <div style={{ width:7,height:7,borderRadius:"50%",background:"#1db954",boxShadow:"0 0 5px #1db954" }}/>
         </div>
-        {auth.isConnected&&<Btn variant="ghost" onClick={auth.logout} style={{ fontSize:9,color:"rgba(180,80,80,0.7)" }}>Disconnect</Btn>}
+        <Btn variant="ghost" onClick={auth.logout} style={{ fontSize:9,color:"rgba(180,80,80,0.7)" }}>Disconnect</Btn>
       </div>
 
-      {/* Not connected */}
-      {!auth.isConnected ? (
-        <div style={{ textAlign:"center",padding:"24px 16px" }}>
-          <div style={{ fontSize:32,marginBottom:12 }}>🎵</div>
-          <div style={{ fontSize:14,color:C.goldDim,marginBottom:6,fontFamily:"Cinzel,serif",letterSpacing:"0.08em" }}>Connect Spotify Premium</div>
-          <div style={{ fontSize:13,color:C.goldFaint,marginBottom:20,lineHeight:1.65 }}>
-            Play any track, playlist, or album from your Spotify library — search by name or paste a URL. Full volume control included.
+      {/* Now playing */}
+      {player.currentTrack ? (
+        <div style={{ background:C.surfaceHigh,borderRadius:10,padding:"14px 16px",marginBottom:14 }}>
+          <div style={{ display:"flex",alignItems:"center",gap:14,marginBottom:12 }}>
+            {player.albumArt&&<img src={player.albumArt} alt="Album" style={{ width:64,height:64,borderRadius:7,flexShrink:0,objectFit:"cover" }}/>}
+            <div style={{ flex:1,minWidth:0 }}>
+              <div style={{ fontSize:15,color:C.gold,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",fontWeight:"normal" }}>
+                {player.currentTrack.name}
+              </div>
+              <div style={{ fontSize:12,color:C.goldDim,marginTop:3 }}>{player.artistName}</div>
+              <div style={{ fontSize:11,color:C.goldFaint,marginTop:1 }}>{player.albumName}</div>
+            </div>
+            {/* Like button */}
+            <button onClick={player.toggleLike} aria-label={player.isLiked?"Unlike":"Like"} aria-pressed={player.isLiked}
+              style={{ background:"transparent",border:"none",fontSize:22,cursor:"pointer",color:player.isLiked?"#1db954":C.goldFaint,outline:"none",padding:"4px",transition:"color 0.2s,transform 0.1s",flexShrink:0 }}
+              onMouseEnter={e=>e.currentTarget.style.transform="scale(1.15)"}
+              onMouseLeave={e=>e.currentTarget.style.transform="scale(1)"}>
+              {player.isLiked?"♥":"♡"}
+            </button>
           </div>
-          <Btn variant="primary" onClick={auth.login} style={{ fontSize:11,padding:"11px 24px" }}>
-            {auth.loading ? "Connecting…" : "Connect Spotify →"}
-          </Btn>
-        </div>
 
-      /* Initialising */ ) : !player.ready ? (
-        <div style={{ textAlign:"center",padding:"20px",color:C.goldDim,fontSize:13,fontStyle:"italic" }}>
-          Initialising Spotify player…
-        </div>
-
-      /* Ready */ ) : (
-        <>
-          {/* Now playing */}
-          {player.currentTrack && (
-            <div style={{ display:"flex",alignItems:"center",gap:14,background:C.surfaceHigh,borderRadius:9,padding:"12px 14px",marginBottom:16 }}>
-              {player.albumArt && (
-                <img src={player.albumArt} alt="Album art"
-                  style={{ width:60,height:60,borderRadius:6,flexShrink:0,objectFit:"cover" }}/>
-              )}
-              <div style={{ flex:1,minWidth:0 }}>
-                <div style={{ fontSize:14,color:C.gold,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis" }}>
-                  {player.currentTrack.name}
-                </div>
-                <div style={{ fontSize:12,color:C.goldDim,marginTop:2 }}>
-                  {player.artistName} · {player.albumName}
-                </div>
+          {/* Progress bar */}
+          <div style={{ marginBottom:8 }}>
+            <div style={{ display:"flex",justifyContent:"space-between",fontSize:10,color:C.goldFaint,marginBottom:5 }}>
+              <span>{fmtMs(player.position)}</span>
+              <span>{fmtMs(player.duration)}</span>
+            </div>
+            <div
+              style={{ height:4,background:C.border,borderRadius:2,cursor:"pointer",position:"relative" }}
+              onClick={e=>{
+                const r=e.currentTarget.getBoundingClientRect();
+                player.seek(Math.floor(((e.clientX-r.left)/r.width)*player.duration));
+              }}>
+              <div style={{ height:"100%",width:`${pct*100}%`,background:"#1db954",borderRadius:2,transition:"width 0.5s linear",position:"relative" }}>
+                <div style={{ position:"absolute",right:-5,top:-4,width:12,height:12,borderRadius:"50%",background:"#1db954",boxShadow:"0 0 4px rgba(29,185,84,0.6)" }}/>
               </div>
             </div>
-          )}
+          </div>
 
           {/* Transport */}
-          <div style={{ display:"flex",alignItems:"center",gap:8,marginBottom:16,flexWrap:"wrap" }}>
-            <button onClick={player.skipPrev} aria-label="Previous track"
-              style={{ background:C.surfaceHigh,border:`1px solid ${C.border}`,borderRadius:8,color:C.goldMid,fontSize:18,cursor:"pointer",padding:"8px 12px",outline:"none",transition:"border-color 0.2s" }}>⏮</button>
-            <button onClick={player.isPaused?player.resume:player.pause} aria-label={player.isPaused?"Play":"Pause"}
-              style={{ background:"rgba(29,185,84,0.18)",border:"1px solid rgba(29,185,84,0.5)",borderRadius:"50%",width:46,height:46,color:"#1db954",fontSize:20,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",outline:"none",flexShrink:0 }}>
+          <div style={{ display:"flex",alignItems:"center",gap:8,flexWrap:"wrap" }}>
+            <button onClick={player.skipPrev} aria-label="Previous"
+              style={{ background:"transparent",border:`1px solid ${C.border}`,borderRadius:7,color:C.goldMid,fontSize:16,cursor:"pointer",padding:"7px 11px",outline:"none" }}>⏮</button>
+            <button onClick={player.isPaused?player.resume:player.pause}
+              style={{ background:"rgba(29,185,84,0.2)",border:"2px solid rgba(29,185,84,0.6)",borderRadius:"50%",width:44,height:44,color:"#1db954",fontSize:18,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",outline:"none",flexShrink:0 }}>
               {player.isPaused?"▶":"⏸"}
             </button>
-            <button onClick={player.skipNext} aria-label="Next track"
-              style={{ background:C.surfaceHigh,border:`1px solid ${C.border}`,borderRadius:8,color:C.goldMid,fontSize:18,cursor:"pointer",padding:"8px 12px",outline:"none",transition:"border-color 0.2s" }}>⏭</button>
+            <button onClick={player.skipNext} aria-label="Next"
+              style={{ background:"transparent",border:`1px solid ${C.border}`,borderRadius:7,color:C.goldMid,fontSize:16,cursor:"pointer",padding:"7px 11px",outline:"none" }}>⏭</button>
 
             <div style={{ flex:1 }}/>
 
-            {/* Shuffle */}
-            <button onClick={player.toggleShuffle} aria-pressed={player.shuffle} aria-label="Toggle shuffle"
-              style={{ display:"flex",alignItems:"center",gap:5,background:player.shuffle?"rgba(29,185,84,0.15)":"transparent",border:`1px solid ${player.shuffle?"rgba(29,185,84,0.4)":C.border}`,borderRadius:8,color:player.shuffle?"#1db954":C.goldFaint,fontSize:11,fontFamily:"Cinzel,serif",letterSpacing:"0.08em",cursor:"pointer",padding:"7px 12px",outline:"none",transition:"all 0.2s" }}>
-              <span style={{ fontSize:14 }}>🔀</span> Shuffle{player.shuffle?" On":" Off"}
+            <button onClick={player.toggleShuffle} aria-pressed={player.shuffle}
+              style={{ display:"flex",alignItems:"center",gap:4,background:player.shuffle?"rgba(29,185,84,0.15)":"transparent",border:`1px solid ${player.shuffle?"rgba(29,185,84,0.4)":C.border}`,borderRadius:7,color:player.shuffle?"#1db954":C.goldFaint,fontSize:10,fontFamily:"Cinzel,serif",letterSpacing:"0.06em",cursor:"pointer",padding:"6px 10px",outline:"none",transition:"all 0.2s" }}>
+              🔀 {player.shuffle?"On":"Off"}
             </button>
-
-            {/* Repeat */}
-            <button onClick={player.toggleRepeat} aria-label="Toggle repeat"
-              style={{ display:"flex",alignItems:"center",gap:5,background:player.repeat!=="off"?"rgba(29,185,84,0.15)":"transparent",border:`1px solid ${player.repeat!=="off"?"rgba(29,185,84,0.4)":C.border}`,borderRadius:8,color:player.repeat!=="off"?"#1db954":C.goldFaint,fontSize:11,fontFamily:"Cinzel,serif",letterSpacing:"0.08em",cursor:"pointer",padding:"7px 12px",outline:"none",transition:"all 0.2s" }}>
-              <span style={{ fontSize:14 }}>{player.repeat==="track"?"🔂":"🔁"}</span>
-              {player.repeat==="off"?"Repeat Off":player.repeat==="context"?"Repeat All":"Repeat One"}
+            <button onClick={player.toggleRepeat}
+              style={{ display:"flex",alignItems:"center",gap:4,background:player.repeat!=="off"?"rgba(29,185,84,0.15)":"transparent",border:`1px solid ${player.repeat!=="off"?"rgba(29,185,84,0.4)":C.border}`,borderRadius:7,color:player.repeat!=="off"?"#1db954":C.goldFaint,fontSize:10,fontFamily:"Cinzel,serif",letterSpacing:"0.06em",cursor:"pointer",padding:"6px 10px",outline:"none",transition:"all 0.2s" }}>
+              {player.repeat==="track"?"🔂":"🔁"} {player.repeat==="off"?"Off":player.repeat==="context"?"All":"One"}
             </button>
           </div>
+        </div>
+      ) : (
+        <div style={{ background:C.surfaceHigh,borderRadius:10,padding:"14px 16px",marginBottom:14,textAlign:"center",color:C.goldDim,fontSize:13,fontStyle:"italic" }}>
+          Nothing playing yet — search or paste a URL below
+        </div>
+      )}
 
-          {/* Queue — next tracks */}
-          {player.nextTracks?.length>0&&(
-            <div style={{ marginBottom:16 }}>
-              <div style={{ fontSize:10,fontFamily:"Cinzel,serif",letterSpacing:"0.12em",color:C.goldFaint,textTransform:"uppercase",marginBottom:8 }}>Up Next</div>
-              {player.nextTracks.map((t,i)=>(
-                <div key={i} style={{ display:"flex",alignItems:"center",gap:10,padding:"7px 0",borderBottom:i<player.nextTracks.length-1?`1px solid ${C.border}`:"none" }}>
-                  {t.album?.images?.[2]?.url&&<img src={t.album.images[2].url} alt="" style={{ width:30,height:30,borderRadius:4,flexShrink:0 }}/>}
-                  <div style={{ flex:1,minWidth:0 }}>
-                    <div style={{ fontSize:12,color:C.goldMid,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis" }}>{t.name}</div>
-                    <div style={{ fontSize:10,color:C.goldFaint }}>{t.artists?.[0]?.name}</div>
-                  </div>
-                  <span style={{ fontSize:10,color:C.goldFaint,flexShrink:0 }}>#{i+1}</span>
+      {/* Volume */}
+      <div style={{ marginBottom:16 }}>
+        <RangeWithTrack id="spvol" label="Volume" value={spotifyVol} onChange={v=>{ setSpotifyVol(v); player.setVol(v); }} leftLabel="0" rightLabel="100"/>
+      </div>
+
+      {/* Up Next queue */}
+      {player.nextTracks?.length>0&&(
+        <div style={{ marginBottom:16 }}>
+          <div style={{ fontSize:10,fontFamily:"Cinzel,serif",letterSpacing:"0.12em",color:C.goldDim,textTransform:"uppercase",marginBottom:8 }}>Up Next — {player.nextTracks.length} tracks</div>
+          <div style={{ background:C.surfaceHigh,borderRadius:9,overflow:"hidden" }}>
+            {player.nextTracks.map((t,i)=>(
+              <SpotifyTrackRow key={i} track={t} onPlay={playUri} onQueue={queueUri} showQueue={true}/>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Browse tabs */}
+      <div style={{ borderTop:`1px solid ${C.border}`,paddingTop:14,marginTop:4 }}>
+        <div style={{ display:"flex",gap:6,marginBottom:12 }}>
+          {[["search","🔍 Search"],["playlists","📚 Your Playlists"],["recent","🕐 Recently Played"],["url","🔗 Paste URL"]].map(([id,label])=>(
+            <button key={id} onClick={()=>switchBrowse(id)}
+              style={{ fontFamily:"Cinzel,serif",fontSize:9,letterSpacing:"0.08em",textTransform:"uppercase",background:browseTab===id?"rgba(232,217,160,0.1)":"transparent",border:`1px solid ${browseTab===id?C.borderFocus:C.border}`,borderRadius:7,color:browseTab===id?C.gold:C.goldDim,cursor:"pointer",padding:"7px 10px",outline:"none",transition:"all 0.2s",flexShrink:0 }}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Search */}
+        {browseTab==="search"&&(
+          <>
+            <div style={{ display:"flex",gap:8,marginBottom:10 }}>
+              <TextInput value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doSearch()} placeholder="Search tracks, playlists, artists…"/>
+              <Btn variant="primary" onClick={doSearch} style={{ whiteSpace:"nowrap",flexShrink:0 }}>{searching?"…":"Search"}</Btn>
+            </div>
+            {searchResults&&(
+              <div style={{ background:C.surfaceHigh,borderRadius:9,overflow:"hidden" }}>
+                {searchResults.tracks?.items?.length>0&&(
+                  <>
+                    <div style={{ padding:"8px 14px",fontSize:9,fontFamily:"Cinzel,serif",letterSpacing:"0.1em",color:C.goldFaint,textTransform:"uppercase",borderBottom:`1px solid ${C.border}` }}>Tracks</div>
+                    {searchResults.tracks.items.map(t=><SpotifyTrackRow key={t.id} track={t} onPlay={playUri} onQueue={queueUri} showQueue={true}/>)}
+                  </>
+                )}
+                {searchResults.playlists?.items?.filter(Boolean).length>0&&(
+                  <>
+                    <div style={{ padding:"8px 14px",fontSize:9,fontFamily:"Cinzel,serif",letterSpacing:"0.1em",color:C.goldFaint,textTransform:"uppercase",borderBottom:`1px solid ${C.border}` }}>Playlists</div>
+                    {searchResults.playlists.items.filter(Boolean).map(pl=><SpotifyPlaylistRow key={pl.id} pl={pl} onPlay={playUri}/>)}
+                  </>
+                )}
+                <div style={{ padding:"8px 14px",textAlign:"right" }}>
+                  <Btn variant="ghost" onClick={()=>setSearchResults(null)} style={{ fontSize:9 }}>Clear results</Btn>
                 </div>
-              ))}
-            </div>
-          )}
-
-          {/* Volume */}
-          <div style={{ marginBottom:16 }}>
-            <RangeWithTrack id="spvol" label="Volume" value={spotifyVol} onChange={v=>{ setSpotifyVol(v); player.setVol(v); }} leftLabel="0" rightLabel="100"/>
-          </div>
-
-          {/* Search */}
-          <div style={{ marginBottom:12 }}>
-            <Label>Search Spotify</Label>
-            <div style={{ display:"flex",gap:8 }}>
-              <TextInput
-                value={searchQuery}
-                onChange={e=>setSearchQuery(e.target.value)}
-                onKeyDown={e=>e.key==="Enter"&&doSearch()}
-                placeholder="Search tracks, playlists, albums…"
-              />
-              <Btn variant="primary" onClick={doSearch} style={{ whiteSpace:"nowrap",flexShrink:0 }}>
-                {searching ? "…" : "Search"}
-              </Btn>
-            </div>
-          </div>
-
-          {/* Search results */}
-          {searchResults && (
-            <div style={{ background:C.surfaceHigh,borderRadius:9,overflow:"hidden",marginBottom:12 }}>
-              {searchResults.tracks?.items?.length>0 && (
-                <>
-                  <div style={{ padding:"8px 14px",fontSize:9,fontFamily:"Cinzel,serif",letterSpacing:"0.12em",color:C.goldFaint,textTransform:"uppercase",borderBottom:`1px solid ${C.border}` }}>Tracks</div>
-                  {searchResults.tracks.items.map(t=>(
-                    <div key={t.id} onClick={()=>playResult(t.uri,t.name)}
-                      style={{ display:"flex",alignItems:"center",gap:12,padding:"10px 14px",cursor:"pointer",borderBottom:`1px solid ${C.border}`,transition:"background 0.15s" }}
-                      onMouseEnter={e=>e.currentTarget.style.background="rgba(232,217,160,0.05)"}
-                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      {t.album?.images?.[2]?.url&&<img src={t.album.images[2].url} alt="" style={{ width:36,height:36,borderRadius:4,flexShrink:0 }}/>}
-                      <div style={{ flex:1,minWidth:0 }}>
-                        <div style={{ fontSize:13,color:C.gold,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis" }}>{t.name}</div>
-                        <div style={{ fontSize:11,color:C.goldDim }}>{t.artists?.[0]?.name}</div>
-                      </div>
-                      <span style={{ fontSize:11,color:C.goldFaint,flexShrink:0 }}>▶</span>
-                    </div>
-                  ))}
-                </>
-              )}
-              {searchResults.playlists?.items?.length>0 && (
-                <>
-                  <div style={{ padding:"8px 14px",fontSize:9,fontFamily:"Cinzel,serif",letterSpacing:"0.12em",color:C.goldFaint,textTransform:"uppercase",borderBottom:`1px solid ${C.border}` }}>Playlists</div>
-                  {searchResults.playlists.items.filter(Boolean).map(pl=>(
-                    <div key={pl.id} onClick={()=>playResult(pl.uri,pl.name)}
-                      style={{ display:"flex",alignItems:"center",gap:12,padding:"10px 14px",cursor:"pointer",borderBottom:`1px solid ${C.border}`,transition:"background 0.15s" }}
-                      onMouseEnter={e=>e.currentTarget.style.background="rgba(232,217,160,0.05)"}
-                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      {pl.images?.[0]?.url&&<img src={pl.images[0].url} alt="" style={{ width:36,height:36,borderRadius:4,flexShrink:0 }}/>}
-                      <div style={{ flex:1,minWidth:0 }}>
-                        <div style={{ fontSize:13,color:C.gold,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis" }}>{pl.name}</div>
-                        <div style={{ fontSize:11,color:C.goldDim }}>{pl.tracks?.total} tracks</div>
-                      </div>
-                      <span style={{ fontSize:11,color:C.goldFaint,flexShrink:0 }}>▶</span>
-                    </div>
-                  ))}
-                </>
-              )}
-              <div style={{ padding:"8px 14px",textAlign:"right" }}>
-                <Btn variant="ghost" onClick={()=>setSearchResults(null)} style={{ fontSize:10 }}>Close</Btn>
               </div>
-            </div>
-          )}
+            )}
+          </>
+        )}
 
-          {/* URL paste fallback */}
-          <div style={{ borderTop:`1px solid ${C.border}`,paddingTop:12,marginTop:4 }}>
-            <Label>Or paste a Spotify URL</Label>
+        {/* My Playlists */}
+        {browseTab==="playlists"&&(
+          <div style={{ background:C.surfaceHigh,borderRadius:9,overflow:"hidden" }}>
+            {!myPlaylists
+              ? <div style={{ padding:"14px",textAlign:"center",color:C.goldDim,fontSize:13,fontStyle:"italic" }}>Loading…</div>
+              : myPlaylists.items?.map(pl=><SpotifyPlaylistRow key={pl.id} pl={pl} onPlay={playUri}/>)
+            }
+          </div>
+        )}
+
+        {/* Recently Played */}
+        {browseTab==="recent"&&(
+          <div style={{ background:C.surfaceHigh,borderRadius:9,overflow:"hidden" }}>
+            {!recentlyPlayed
+              ? <div style={{ padding:"14px",textAlign:"center",color:C.goldDim,fontSize:13,fontStyle:"italic" }}>Loading…</div>
+              : recentlyPlayed.items?.map((item,i)=><SpotifyTrackRow key={i} track={item.track} onPlay={playUri} onQueue={queueUri} showQueue={true}/>)
+            }
+          </div>
+        )}
+
+        {/* Paste URL */}
+        {browseTab==="url"&&(
+          <div>
+            <div style={{ fontSize:12,color:C.goldDim,marginBottom:8 }}>Paste any Spotify URL — track, playlist, album, or artist.</div>
             <div style={{ display:"flex",gap:8 }}>
               <TextInput value={spotifyInput} onChange={e=>setSpotifyInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&onLoadSpotify()} placeholder="open.spotify.com/playlist/…"/>
-              <Btn variant="default" onClick={onLoadSpotify} style={{ whiteSpace:"nowrap",flexShrink:0 }}>Play</Btn>
+              <Btn variant="primary" onClick={onLoadSpotify} style={{ whiteSpace:"nowrap",flexShrink:0 }}>Play</Btn>
             </div>
           </div>
-        </>
-      )}
+        )}
+      </div>
     </Card>
   );
 }
@@ -1675,55 +1796,52 @@ export default function App() {
         <div id="ambient-player"/>
       </div>
 
-      {/* ─── Main UI ─────────────────────────────────────────────── */}
-      <div style={{ position:"relative",zIndex:3,maxWidth:920,margin:"0 auto",padding:"0 1.5rem 3rem",opacity:presentationMode?0:1,pointerEvents:presentationMode?"none":"all",transition:"opacity 0.8s ease" }}>
+      {/* ─── Main UI — fixed height flex column ──────────────────── */}
+      <div style={{
+        position:"fixed", inset:0, zIndex:3,
+        display:"flex", flexDirection:"column",
+        maxWidth:940, margin:"0 auto", left:0, right:0,
+        opacity:presentationMode?0:1, pointerEvents:presentationMode?"none":"all",
+        transition:"opacity 0.8s ease",
+      }}>
 
-        {/* Header */}
-        <div style={{ textAlign:"center",padding:"2rem 0 1.5rem",borderBottom:`1px solid ${C.border}`,marginBottom:0,position:"relative" }}>
-          <div style={{ display:"flex",alignItems:"center",justifyContent:"center",gap:14,marginBottom:10 }}>
-            <div style={{ flex:1,height:1,background:"linear-gradient(to right,transparent,rgba(232,217,160,0.2))" }}/>
-            <div style={{ color:"rgba(232,217,160,0.35)",fontSize:10 }}>✦</div>
-            <div style={{ flex:1,height:1,background:"linear-gradient(to left,transparent,rgba(232,217,160,0.2))" }}/>
+        {/* Compact header */}
+        <div style={{ flexShrink:0, borderBottom:`1px solid ${C.border}`, padding:"14px 24px 12px", display:"flex", alignItems:"center", justifyContent:"space-between", gap:16 }}>
+          <div style={{ fontSize:10,color:C.goldFaint,fontStyle:"italic",lineHeight:1.6,minWidth:110 }}>
+            Space: play/pause<br/>P: present · 1–{scenes.length}: scenes
           </div>
-          <h1 style={{ fontFamily:"Cinzel,serif",fontSize:44,fontWeight:700,letterSpacing:"0.3em",color:C.gold,margin:0,textShadow:tension>60?`0 0 ${20+t*60}px rgba(220,80,40,${0.3+t*0.45})`:"0 0 50px rgba(232,217,160,0.18)",transition:"text-shadow 0.6s" }}>
-            ANDULAAK
-          </h1>
-          <p style={{ fontSize:13,color:C.goldDim,fontStyle:"italic",marginTop:6,letterSpacing:"0.15em" }}>
-            Atmosphere Board · DM Console
-          </p>
-          <div style={{ display:"flex",alignItems:"center",justifyContent:"center",gap:14,marginTop:10 }}>
-            <div style={{ flex:1,height:1,background:"linear-gradient(to right,transparent,rgba(232,217,160,0.07))" }}/>
-            <div style={{ color:"rgba(232,217,160,0.12)",fontSize:8 }}>✦</div>
-            <div style={{ flex:1,height:1,background:"linear-gradient(to left,transparent,rgba(232,217,160,0.07))" }}/>
+          <div style={{ textAlign:"center", flex:1 }}>
+            <h1 style={{ fontFamily:"Cinzel,serif",fontSize:30,fontWeight:700,letterSpacing:"0.3em",color:C.gold,margin:0,textShadow:tension>60?`0 0 ${16+t*50}px rgba(220,80,40,${0.3+t*0.4})`:"0 0 30px rgba(232,217,160,0.15)",transition:"text-shadow 0.6s" }}>
+              ANDULAAK
+            </h1>
+            <div style={{ fontSize:11,color:C.goldDim,fontStyle:"italic",marginTop:2,letterSpacing:"0.12em" }}>
+              Atmosphere Board · DM Console
+            </div>
           </div>
-          {/* Keyboard hints */}
-          <div style={{ position:"absolute",left:0,top:"50%",transform:"translateY(-50%)",fontSize:10,color:C.goldFaint,fontStyle:"italic",display:"flex",flexDirection:"column",gap:3,textAlign:"left" }}>
-            <span>Space: play/pause</span>
-            <span>P: present</span>
+          <div style={{ minWidth:110, display:"flex", justifyContent:"flex-end" }}>
+            <button onClick={()=>setPresent(true)} aria-label="Enter presentation mode"
+              style={{ fontFamily:"Cinzel,serif",fontSize:10,letterSpacing:"0.15em",color:C.goldMid,textTransform:"uppercase",cursor:"pointer",border:`1px solid ${C.border}`,padding:"8px 16px",borderRadius:7,background:C.surface,outline:"none" }}>
+              Present
+            </button>
           </div>
-          {/* Present button */}
-          <button onClick={()=>setPresent(true)} aria-label="Enter presentation mode"
-            style={{ position:"absolute",right:0,top:"50%",transform:"translateY(-50%)",fontFamily:"Cinzel,serif",fontSize:10,letterSpacing:"0.15em",color:C.goldMid,textTransform:"uppercase",cursor:"pointer",border:`1px solid ${C.border}`,padding:"8px 18px",borderRadius:7,background:C.surface,outline:"none",transition:"all 0.2s" }}>
-            Present
-          </button>
         </div>
 
-        {/* Tab navigation */}
-        <div role="tablist" style={{ display:"flex",gap:2,padding:"12px 0",borderBottom:`1px solid ${C.border}`,marginBottom:24 }}>
+        {/* Tab navigation — always centered */}
+        <div role="tablist" style={{ flexShrink:0, display:"flex", justifyContent:"center", gap:2, padding:"10px 24px", borderBottom:`1px solid ${C.border}` }}>
           {TABS.map(tab=>{
             const isActive = activeTab===tab.id;
             return (
               <button key={tab.id} role="tab" aria-selected={isActive} aria-controls={`panel-${tab.id}`}
                 onClick={()=>setActiveTab(tab.id)}
-                style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.15em",textTransform:"uppercase",color:isActive?C.gold:C.goldDim,background:isActive?"rgba(232,217,160,0.08)":"transparent",border:`1px solid ${isActive?C.borderFocus:"transparent"}`,borderRadius:7,padding:"10px 22px",cursor:"pointer",transition:"all 0.2s",outline:"none",flexShrink:0 }}>
+                style={{ fontFamily:"Cinzel,serif",fontSize:10,letterSpacing:"0.15em",textTransform:"uppercase",color:isActive?C.gold:C.goldDim,background:isActive?"rgba(232,217,160,0.08)":"transparent",border:`1px solid ${isActive?C.borderFocus:"transparent"}`,borderRadius:7,padding:"9px 20px",cursor:"pointer",transition:"all 0.2s",outline:"none",flexShrink:0 }}>
                 {tab.label}
               </button>
             );
           })}
         </div>
 
-        {/* Tab panels */}
-        <div role="tabpanel" id={`panel-${activeTab}`} style={{ minHeight:"65vh" }}>
+        {/* Tab panel — scrollable, takes all remaining height */}
+        <div role="tabpanel" id={`panel-${activeTab}`} style={{ flex:1, overflowY:"auto", padding:"20px 24px 24px" }}>
           {activeTab==="stage"&&(
             <StageScreen
               scenes={scenes} sceneData={sceneData} activeSceneId={activeSceneId}
@@ -1782,10 +1900,10 @@ export default function App() {
         </div>
 
         {/* Footer */}
-        <div style={{ textAlign:"center",fontSize:11,color:C.goldFaint,fontStyle:"italic",paddingTop:"2rem",marginTop:"2rem",borderTop:`1px solid ${C.border}` }}>
+        <div style={{ textAlign:"center",fontSize:10,color:C.goldFaint,fontStyle:"italic",paddingTop:"1.5rem",marginTop:"1rem",borderTop:`1px solid ${C.border}` }}>
           Andulaak Atmosphere Board · The calm is here. It won't last.
         </div>
-      </div>
+      </div>{/* end main UI flex column */}
 
       {/* Audio panels — always in DOM so players persist across tab switches */}
       {activeTab!=="audio"&&(
