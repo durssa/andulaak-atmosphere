@@ -50,7 +50,7 @@ const EMPTY_SDATA = { musicUrl:"", ambientUrl:"", bgImage:null, notes:"", spotif
 // ─── Spotify constants ────────────────────────────────────────────────────
 const SPOTIFY_CLIENT_ID  = "96b844a4f9a141929ee518cac9a33137";
 const SPOTIFY_REDIRECT   = typeof window !== "undefined" ? window.location.origin : "";
-const SPOTIFY_SCOPES     = "streaming user-read-email user-read-private";
+const SPOTIFY_SCOPES     = "streaming user-read-email user-read-private playlist-read-private playlist-read-collaborative user-read-recently-played user-library-read user-library-modify user-modify-playback-state";
 
 // ─── Spotify PKCE helpers ─────────────────────────────────────────────────
 async function spVerifier() {
@@ -308,7 +308,12 @@ function useSpotifyPlayer(token) {
         setPosition(s.position);
         setDuration(s.duration);
         if (s.track_window?.current_track) setCurrentTrack(s.track_window.current_track);
-        if (s.track_window?.next_tracks) setNextTracks(s.track_window.next_tracks);
+        // Fetch full queue from API (SDK only gives 1-3 next tracks)
+        if (tokenRef.current) {
+          fetch("https://api.spotify.com/v1/me/player/queue", {
+            headers:{ Authorization:`Bearer ${tokenRef.current}` }
+          }).then(r=>r.ok?r.json():null).then(d=>{ if(d?.queue) setNextTracks(d.queue.slice(0,10)); }).catch(()=>{});
+        }
       });
       player.connect();
       playerRef.current = player;
@@ -667,119 +672,95 @@ function StageScreen({ scenes, sceneData, activeSceneId, onSceneClick, tension, 
   const t = tension/100;
 
   return (
-    <div>
-      {/* Now Playing */}
-      <Card style={{ marginBottom:20, display:"flex", alignItems:"center", gap:16, border:`1px solid ${tension>65?`rgba(160,40,40,${0.3+t*0.35})`:C.border}`, boxShadow:tension>75?`0 0 ${10+t*20}px rgba(140,20,20,${0.1+t*0.2})`:"none", transition:"all 0.5s" }}>
-        <div style={{ width:12,height:12,borderRadius:"50%",flexShrink:0,background:isPlaying&&activeScene?tensionColor:"#3a3228",boxShadow:isPlaying&&activeScene?`0 0 12px ${tensionColor}`:"none",animation:isPlaying&&activeScene?"pulse 2s ease-in-out infinite":"none",transition:"all 0.5s" }}/>
-        <div style={{ flex:1 }}>
-          <div style={{ fontFamily:"Cinzel,serif",fontSize:16,color:C.gold,letterSpacing:"0.06em" }}>{activeScene?activeScene.name:"No Scene Selected"}</div>
-          <div style={{ fontSize:14,color:C.goldMid,fontStyle:"italic",marginTop:4 }}>{isPlaying?getMood(activeScene,tension):activeScene?"Paused":"Select a scene below to begin"}</div>
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", gap:8 }}>
+
+      {/* Now Playing — compact */}
+      <div style={{ flexShrink:0, display:"flex", alignItems:"center", gap:12, background:C.surface, border:`1px solid ${tension>65?`rgba(160,40,40,${0.3+t*0.35})`:C.border}`, borderRadius:10, padding:"10px 16px", boxShadow:tension>75?`0 0 ${8+t*16}px rgba(140,20,20,${0.1+t*0.2})`:"none", transition:"all 0.5s" }}>
+        <div style={{ width:10,height:10,borderRadius:"50%",flexShrink:0,background:isPlaying&&activeScene?tensionColor:"#3a3228",boxShadow:isPlaying&&activeScene?`0 0 10px ${tensionColor}`:"none",animation:isPlaying&&activeScene?"pulse 2s ease-in-out infinite":"none",transition:"all 0.5s" }}/>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontFamily:"Cinzel,serif",fontSize:14,color:C.gold,letterSpacing:"0.06em" }}>{activeScene?activeScene.name:"No Scene Selected"}</div>
+          <div style={{ fontSize:12,color:C.goldMid,fontStyle:"italic",marginTop:1 }}>{isPlaying?getMood(activeScene,tension):activeScene?"Paused":"Select a scene below"}</div>
         </div>
         <div style={{ textAlign:"right",flexShrink:0,marginRight:4 }}>
-          <div style={{ fontSize:11,color:C.goldDim,marginBottom:2 }}>{getDayLabel(dayNight)}</div>
-          <div style={{ fontSize:12,fontFamily:"Cinzel,serif",letterSpacing:"0.1em",color:tensionColor,transition:"color 0.5s" }}>{getTensionLabel(tension)}</div>
+          <div style={{ fontSize:10,color:C.goldDim }}>{getDayLabel(dayNight)}</div>
+          <div style={{ fontSize:11,fontFamily:"Cinzel,serif",color:tensionColor,transition:"color 0.5s" }}>{getTensionLabel(tension)}</div>
         </div>
-        <button onClick={()=>activeScene&&setIsPlaying(p=>!p)}
-          aria-label={isPlaying?"Pause":"Play"}
-          style={{ background:"rgba(232,217,160,0.08)",border:`1px solid rgba(232,217,160,0.2)`,borderRadius:"50%",width:48,height:48,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",cursor:activeScene?"pointer":"default",color:activeScene?C.gold:"#3a3228",fontSize:18,outline:"none",transition:"all 0.2s" }}>
+        <button onClick={()=>activeScene&&setIsPlaying(p=>!p)} aria-label={isPlaying?"Pause":"Play"}
+          style={{ background:"rgba(232,217,160,0.08)",border:`1px solid rgba(232,217,160,0.2)`,borderRadius:"50%",width:40,height:40,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",cursor:activeScene?"pointer":"default",color:activeScene?C.gold:"#3a3228",fontSize:16,outline:"none" }}>
           {isPlaying?"⏸":"▶"}
         </button>
-      </Card>
-
-      {/* Scene grid */}
-      <div style={{ fontFamily:"Cinzel,serif",fontSize:10,letterSpacing:"0.2em",color:C.goldDim,textTransform:"uppercase",marginBottom:12 }}>
-        Scenes <span style={{ fontSize:9,color:C.goldFaint,letterSpacing:"0.1em",textTransform:"none",marginLeft:8 }}>Press 1–{scenes.length} to switch</span>
-      </div>
-      <div style={{ display:"grid",gridTemplateColumns:`repeat(${Math.min(scenes.length,4)},1fr)`,gap:10,marginBottom:24 }}>
-        {scenes.map((s,idx)=>{
-          const sd = sceneData[s.id]??{};
-          const isActive = activeSceneId===s.id;
-          return (
-            <button key={s.id} onClick={()=>onSceneClick(s)}
-              aria-pressed={isActive}
-              aria-label={`Switch to ${s.name}`}
-              style={{ position:"relative",background:isActive?"rgba(232,217,160,0.08)":C.surface,border:`2px solid ${isActive?`rgba(232,217,160,${0.4+t*0.3})`:C.border}`,borderRadius:10,padding:"20px 10px 32px",cursor:"pointer",textAlign:"center",transition:"all 0.25s",overflow:"hidden",backgroundImage:sd.bgImage?`url(${sd.bgImage})`:"none",backgroundSize:"cover",backgroundPosition:"center",boxShadow:isActive&&tension>70?`0 0 ${14+t*20}px rgba(160,40,40,0.35)`:isActive?"0 0 12px rgba(232,217,160,0.08)":"none",outline:"none" }}>
-              {sd.bgImage&&<div style={{ position:"absolute",inset:0,background:isActive?"rgba(0,0,0,0.45)":"rgba(0,0,0,0.62)",borderRadius:8,transition:"background 0.3s" }}/>}
-              {/* Keyboard number */}
-              <div style={{ position:"absolute",top:5,right:7,fontSize:9,color:"rgba(212,201,168,0.3)",fontFamily:"Cinzel,serif" }}>{idx+1}</div>
-              <div style={{ position:"relative",zIndex:1 }}>
-                <div style={{ fontSize:28,marginBottom:8 }}>{s.icon}</div>
-                <div style={{ fontFamily:"Cinzel,serif",fontSize:9,letterSpacing:"0.08em",color:isActive?C.gold:C.goldMid,textTransform:"uppercase",lineHeight:1.4 }}>{s.name}</div>
-                {isActive&&isPlaying&&<div style={{ width:6,height:6,borderRadius:"50%",background:tensionColor,boxShadow:`0 0 8px ${tensionColor}`,margin:"8px auto 0",animation:"pulse 2s ease-in-out infinite" }}/>}
-              </div>
-            </button>
-          );
-        })}
       </div>
 
-      {/* Controls */}
-      <div style={{ display:"grid",gridTemplateColumns:"1.2fr 1fr",gap:14 }}>
-        <Card style={{ border:`1px solid ${tension>65?`rgba(160,40,40,${0.3+t*0.3})`:C.border}`,boxShadow:tension>75?`0 0 ${10+t*20}px rgba(140,20,20,${0.1+t*0.2})`:"none",transition:"all 0.5s" }}>
-          <RangeWithTrack
-            id="tension-slider" label="Tension"
-            value={tension} onChange={setTension}
-            leftLabel="Peaceful" rightLabel="War"
-            trackColor="linear-gradient(to right,#2d6b50,#4a8c6a,#c4742a,#8b2020,#5c0808)"
-          />
-          <div style={{ textAlign:"right",marginTop:8,fontSize:13,fontFamily:"Cinzel,serif",letterSpacing:"0.12em",color:tensionColor,transition:"color 0.5s",fontWeight:tension>=80?700:400,animation:tension>=80?"pulse 1s ease-in-out infinite":"none" }}>
-            {getTensionLabel(tension)}
-          </div>
-        </Card>
-        <Card>
-          <RangeWithTrack
-            id="daynight-slider" label={`Time of Day ${getDayIcon(dayNight)}`}
-            value={dayNight} onChange={setDayNight}
-            leftLabel="Night" rightLabel="Day"
-            trackColor="linear-gradient(to right,#0a0a1a,#2a1a4a,#6a3820,#d4843a,#f0c060)"
-          />
-          <div style={{ textAlign:"center",marginTop:8,fontSize:12,color:C.goldMid,fontStyle:"italic" }}>{getDayLabel(dayNight)}</div>
-        </Card>
-      </div>
-
-      {/* ── Mood Presets ── */}
-      <div style={{ marginTop:20 }}>
-        <div style={{ fontFamily:"Cinzel,serif",fontSize:10,letterSpacing:"0.18em",color:C.goldDim,textTransform:"uppercase",marginBottom:12 }}>
-          Mood Presets <span style={{ fontSize:9,color:C.goldFaint,letterSpacing:"0.06em",textTransform:"none",marginLeft:8 }}>click to apply · ✎ to customise</span>
+      {/* Scene grid — flex:1 so it fills available space */}
+      <div style={{ flex:1, minHeight:0 }}>
+        <div style={{ fontFamily:"Cinzel,serif",fontSize:9,letterSpacing:"0.2em",color:C.goldDim,textTransform:"uppercase",marginBottom:6 }}>
+          Scenes <span style={{ fontSize:8,color:C.goldFaint,letterSpacing:"0.1em",textTransform:"none",marginLeft:6 }}>1–{scenes.length} to switch</span>
         </div>
-        <div style={{ display:"grid", gridTemplateColumns:`repeat(${presets.length},1fr)`, gap:8 }}>
+        <div style={{ display:"grid",gridTemplateColumns:`repeat(${Math.min(scenes.length,4)},1fr)`,gap:7,height:"calc(100% - 22px)" }}>
+          {scenes.map((s,idx)=>{
+            const sd = sceneData[s.id]??{};
+            const isActive = activeSceneId===s.id;
+            return (
+              <button key={s.id} onClick={()=>onSceneClick(s)} aria-pressed={isActive} aria-label={`Switch to ${s.name}`}
+                style={{ position:"relative",background:isActive?"rgba(232,217,160,0.08)":C.surface,border:`2px solid ${isActive?`rgba(232,217,160,${0.4+t*0.3})`:C.border}`,borderRadius:9,padding:"8px 6px 18px",cursor:"pointer",textAlign:"center",transition:"all 0.25s",overflow:"hidden",backgroundImage:sd.bgImage?`url(${sd.bgImage})`:"none",backgroundSize:"cover",backgroundPosition:"center",boxShadow:isActive&&tension>70?`0 0 ${12+t*16}px rgba(160,40,40,0.35)`:isActive?"0 0 10px rgba(232,217,160,0.07)":"none",outline:"none",width:"100%",height:"100%" }}>
+                {sd.bgImage&&<div style={{ position:"absolute",inset:0,background:isActive?"rgba(0,0,0,0.45)":"rgba(0,0,0,0.62)",borderRadius:7 }}/>}
+                <div style={{ position:"absolute",top:4,right:5,fontSize:8,color:"rgba(212,201,168,0.3)",fontFamily:"Cinzel,serif" }}>{idx+1}</div>
+                <div style={{ position:"relative",zIndex:1 }}>
+                  <div style={{ fontSize:22,marginBottom:4 }}>{s.icon}</div>
+                  <div style={{ fontFamily:"Cinzel,serif",fontSize:8,letterSpacing:"0.07em",color:isActive?C.gold:C.goldMid,textTransform:"uppercase",lineHeight:1.3 }}>{s.name}</div>
+                  {isActive&&isPlaying&&<div style={{ width:5,height:5,borderRadius:"50%",background:tensionColor,boxShadow:`0 0 6px ${tensionColor}`,margin:"5px auto 0",animation:"pulse 2s ease-in-out infinite" }}/>}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Mood presets — compact strip */}
+      <div style={{ flexShrink:0 }}>
+        <div style={{ fontFamily:"Cinzel,serif",fontSize:9,letterSpacing:"0.15em",color:C.goldDim,textTransform:"uppercase",marginBottom:6 }}>
+          Mood Presets <span style={{ fontSize:8,color:C.goldFaint,letterSpacing:"0.04em",textTransform:"none",marginLeft:6 }}>click · ✎ edit</span>
+        </div>
+        <div style={{ display:"grid",gridTemplateColumns:`repeat(${presets.length},1fr)`,gap:6 }}>
           {presets.map(p=>{
             const isActive = tension===p.tension&&dayNight===p.dayNight;
             return (
               <div key={p.id} style={{ position:"relative" }}>
-                <button onClick={()=>{ setTension(p.tension); setDayNight(p.dayNight); }} aria-label={`Apply ${p.name} preset`}
-                  style={{ width:"100%",background:isActive?"rgba(232,217,160,0.1)":C.surface,border:`1px solid ${isActive?C.borderFocus:C.border}`,borderRadius:9,padding:"12px 8px",cursor:"pointer",textAlign:"center",transition:"all 0.2s",outline:"none" }}>
-                  <div style={{ fontSize:20,marginBottom:5 }}>{p.icon}</div>
-                  <div style={{ fontFamily:"Cinzel,serif",fontSize:9,letterSpacing:"0.08em",color:isActive?C.gold:C.goldMid,textTransform:"uppercase" }}>{p.name}</div>
-                  <div style={{ fontSize:9,color:C.goldFaint,marginTop:3 }}>T:{p.tension} · {getDayIcon(p.dayNight)}</div>
+                <button onClick={()=>{ setTension(p.tension); setDayNight(p.dayNight); }}
+                  style={{ width:"100%",background:isActive?"rgba(232,217,160,0.1)":C.surface,border:`1px solid ${isActive?C.borderFocus:C.border}`,borderRadius:8,padding:"8px 4px 6px",cursor:"pointer",textAlign:"center",transition:"all 0.2s",outline:"none" }}>
+                  <div style={{ fontSize:16,marginBottom:2 }}>{p.icon}</div>
+                  <div style={{ fontFamily:"Cinzel,serif",fontSize:8,color:isActive?C.gold:C.goldMid,textTransform:"uppercase" }}>{p.name}</div>
                 </button>
-                <button onClick={()=>onEditPreset(p)} aria-label={`Edit ${p.name} preset`}
-                  style={{ position:"absolute",top:4,right:5,fontSize:9,color:C.goldFaint,background:"transparent",border:"none",cursor:"pointer",padding:"2px 4px",outline:"none" }}>✎</button>
+                <button onClick={()=>onEditPreset(p)} style={{ position:"absolute",top:3,right:4,fontSize:8,color:C.goldFaint,background:"transparent",border:"none",cursor:"pointer",padding:"1px 3px",outline:"none" }}>✎</button>
               </div>
             );
           })}
         </div>
       </div>
 
-      {/* ── Encounter Timer ── */}
-      <div style={{ marginTop:20 }}>
-        <div style={{ fontFamily:"Cinzel,serif",fontSize:10,letterSpacing:"0.18em",color:C.goldDim,textTransform:"uppercase",marginBottom:12 }}>
-          Encounter Timer
-        </div>
-        <Card style={{ display:"flex",alignItems:"center",gap:20,flexWrap:"wrap" }}>
-          <div style={{ fontFamily:"Cinzel,serif",fontSize:36,letterSpacing:"0.1em",color:timer.running?C.gold:C.goldDim,minWidth:100,fontVariantNumeric:"tabular-nums",transition:"color 0.3s" }}>
-            {timer.display}
+      {/* Bottom row: Tension | Day/Night | Encounter Timer */}
+      <div style={{ flexShrink:0, display:"grid", gridTemplateColumns:"1.1fr 1fr 1fr", gap:8 }}>
+        <Card style={{ padding:"12px 14px", border:`1px solid ${tension>65?`rgba(160,40,40,${0.3+t*0.3})`:C.border}`, boxShadow:tension>75?`0 0 ${8+t*16}px rgba(140,20,20,${0.1+t*0.2})`:"none" }}>
+          <RangeWithTrack id="tension-slider" label="Tension" value={tension} onChange={setTension} leftLabel="Calm" rightLabel="War" trackColor="linear-gradient(to right,#2d6b50,#4a8c6a,#c4742a,#8b2020,#5c0808)"/>
+          <div style={{ textAlign:"right",marginTop:4,fontSize:11,fontFamily:"Cinzel,serif",color:tensionColor,fontWeight:tension>=80?700:400,animation:tension>=80?"pulse 1s ease-in-out infinite":"none" }}>{getTensionLabel(tension)}</div>
+        </Card>
+        <Card style={{ padding:"12px 14px" }}>
+          <RangeWithTrack id="daynight-slider" label={`Time ${getDayIcon(dayNight)}`} value={dayNight} onChange={setDayNight} leftLabel="Night" rightLabel="Day" trackColor="linear-gradient(to right,#0a0a1a,#2a1a4a,#6a3820,#d4843a,#f0c060)"/>
+          <div style={{ textAlign:"center",marginTop:4,fontSize:10,color:C.goldMid,fontStyle:"italic" }}>{getDayLabel(dayNight)}</div>
+        </Card>
+        <Card style={{ padding:"12px 14px", display:"flex", flexDirection:"column", justifyContent:"space-between" }}>
+          <div style={{ fontFamily:"Cinzel,serif",fontSize:9,letterSpacing:"0.12em",color:C.goldDim,textTransform:"uppercase",marginBottom:4 }}>Encounter Timer</div>
+          <div style={{ display:"flex",alignItems:"center",gap:10 }}>
+            <div style={{ fontFamily:"Cinzel,serif",fontSize:24,letterSpacing:"0.08em",color:timer.running?C.gold:C.goldDim,fontVariantNumeric:"tabular-nums",flex:1 }}>{timer.display}</div>
+            <div style={{ textAlign:"center" }}>
+              <div style={{ fontSize:9,color:C.goldFaint }}>Round</div>
+              <div style={{ fontFamily:"Cinzel,serif",fontSize:20,color:getTensionColor(tension) }}>{timer.round}</div>
+            </div>
           </div>
-          <div style={{ textAlign:"center" }}>
-            <div style={{ fontSize:11,color:C.goldFaint,marginBottom:3 }}>D&amp;D Round</div>
-            <div style={{ fontFamily:"Cinzel,serif",fontSize:28,color:getTensionColor(tension),letterSpacing:"0.05em" }}>{timer.round}</div>
-          </div>
-          <div style={{ flex:1 }}/>
-          <div style={{ display:"flex",gap:8,flexWrap:"wrap" }}>
-            <Btn variant={timer.running?"default":"primary"} onClick={timer.toggle}>
-              {timer.running?"⏸ Pause":"▶ Start"}
-            </Btn>
-            <Btn variant="default" onClick={timer.nextRound}>+ Round</Btn>
-            <Btn variant="ghost" onClick={timer.reset} style={{ color:"rgba(180,80,80,0.7)" }}>Reset</Btn>
+          <div style={{ display:"flex",gap:5,marginTop:6 }}>
+            <Btn variant={timer.running?"default":"primary"} onClick={timer.toggle} style={{ flex:1,padding:"5px 8px",fontSize:9 }}>{timer.running?"⏸":"▶"}</Btn>
+            <Btn variant="default" onClick={timer.nextRound} style={{ padding:"5px 8px",fontSize:9 }}>+R</Btn>
+            <Btn variant="ghost" onClick={timer.reset} style={{ padding:"5px 8px",fontSize:9,color:"rgba(180,80,80,0.7)" }}>↺</Btn>
           </div>
         </Card>
       </div>
@@ -833,6 +814,29 @@ function YouTubeTrackPanel({ label, input, setInput, onLoad, onClear, hasId, con
   );
 }
 
+function CompactYTPanel({ label, input, setInput, onLoad, onClear, hasId, containerId, hint }) {
+  return (
+    <Card style={{ padding:"10px 12px" }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+        <div style={{ fontFamily:"Cinzel,serif", fontSize:9, letterSpacing:"0.15em", color:C.gold, textTransform:"uppercase" }}>{label}</div>
+        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+          <button onClick={()=>window.open(`https://www.youtube.com/results?search_query=${encodeURIComponent(hint)}`,"_blank","noopener")}
+            style={{ fontSize:9, color:C.goldDim, background:"transparent", border:`1px solid ${C.border}`, borderRadius:5, cursor:"pointer", padding:"3px 7px", outline:"none" }}>
+            🔎 Search YouTube
+          </button>
+          {hasId && <button onClick={onClear} style={{ fontSize:9, color:"rgba(180,80,80,0.7)", background:"transparent", border:`1px solid rgba(180,80,80,0.2)`, borderRadius:5, cursor:"pointer", padding:"3px 7px", outline:"none" }}>✕ Clear</button>}
+        </div>
+      </div>
+      <div style={{ display:"flex", gap:6 }}>
+        <TextInput value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&onLoad()} placeholder="YouTube URL or video ID…"/>
+        <Btn variant="primary" onClick={onLoad} style={{ whiteSpace:"nowrap", flexShrink:0, padding:"7px 12px", fontSize:9 }}>Load</Btn>
+      </div>
+      {hasId && <div style={{ marginTop:6, borderRadius:6, overflow:"hidden", height:65 }}><div id={containerId} style={{ width:"100%", height:"100%" }}/></div>}
+      {!hasId && <div id={containerId} style={{ display:"none" }}/>}
+    </Card>
+  );
+}
+
 function AudioScreen({ activeScene, sceneData, musicId, ambientId, musicVol, setMusicVol, ambientVol, setAmbientVol, sfxVol, setSfxVol, spotifyVol, setSpotifyVol, isPlaying, soundboard, setSoundboard, onLoadMusic, onLoadAmbient, onClearMusic, onClearAmbient, musicInput, setMusicInput, ambientInput, setAmbientInput, triggerSfx, editingSfxIdx, setEditingSfxIdx, spotifyAuth, spotifyPlayer, spotifyInput, setSpotifyInput, onLoadSpotify }) {
   const [showSfxPlayer, setShowSfxPlayer] = useState(false);
 
@@ -844,65 +848,68 @@ function AudioScreen({ activeScene, sceneData, musicId, ambientId, musicVol, set
   }
 
   return (
-    <div>
-      {/* Main tracks */}
-      <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:20 }}>
-        <YouTubeTrackPanel label="Music Track" input={musicInput} setInput={setMusicInput} onLoad={onLoadMusic} onClear={onClearMusic} hasId={!!musicId} containerId="music-player" hint={activeScene?.musicHint??"fantasy epic music 1 hour"}/>
-        <YouTubeTrackPanel label="Ambient Sound" input={ambientInput} setInput={setAmbientInput} onLoad={onLoadAmbient} onClear={onClearAmbient} hasId={!!ambientId} containerId="ambient-player" hint={activeScene?.ambientHint??"ambient sound 1 hour"}/>
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", gap:8 }}>
+
+      {/* YouTube tracks — side by side, compact */}
+      <div style={{ flexShrink:0, display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+        <CompactYTPanel label="Music Track" input={musicInput} setInput={setMusicInput} onLoad={onLoadMusic} onClear={onClearMusic} hasId={!!musicId} containerId="music-player" hint={activeScene?.musicHint??"fantasy epic music 1 hour"}/>
+        <CompactYTPanel label="Ambient Sound" input={ambientInput} setInput={setAmbientInput} onLoad={onLoadAmbient} onClear={onClearAmbient} hasId={!!ambientId} containerId="ambient-player" hint={activeScene?.ambientHint??"ambient sound 1 hour"}/>
       </div>
 
-      {/* Volume controls */}
-      <Card style={{ marginBottom:20 }}>
-        <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.18em",color:C.gold,textTransform:"uppercase",marginBottom:16 }}>Volume Mix</div>
-        <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:20 }}>
-          <RangeWithTrack id="mv" label="Music"   value={musicVol}   onChange={setMusicVol}   leftLabel="0" rightLabel="100"/>
-          <RangeWithTrack id="av" label="Ambient" value={ambientVol} onChange={setAmbientVol} leftLabel="0" rightLabel="100"/>
-          <RangeWithTrack id="sv" label="SFX"     value={sfxVol}     onChange={setSfxVol}     leftLabel="0" rightLabel="100"/>
-        </div>
-      </Card>
-
-      {/* Soundboard */}
-      <Card>
-        <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.18em",color:C.gold,textTransform:"uppercase",marginBottom:16 }}>
-          Soundboard <span style={{ fontSize:10,color:C.goldFaint,letterSpacing:"0.06em",textTransform:"none",marginLeft:8 }}>one-shot sounds · click ✎ to configure</span>
-        </div>
-        <div style={{ display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14 }}>
-          {soundboard.map((slot,i)=>{
-            const hasUrl = !!getYouTubeId(slot.url);
-            return (
-              <div key={i} style={{ position:"relative" }}>
-                <button onClick={()=>hasUrl?playSfx(slot):setEditingSfxIdx(i)} aria-label={slot.name||`Sound slot ${i+1}`}
-                  style={{ width:"100%",background:hasUrl?"rgba(232,217,160,0.06)":C.surfaceHigh,border:`1px solid ${hasUrl?"rgba(232,217,160,0.25)":C.border}`,borderRadius:9,padding:"14px 10px",textAlign:"center",cursor:"pointer",transition:"all 0.2s",minHeight:72,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:5,outline:"none" }}>
-                  <div style={{ fontSize:22 }}>{slot.icon||"♦"}</div>
-                  <div style={{ fontFamily:"Cinzel,serif",fontSize:9,letterSpacing:"0.06em",color:hasUrl?C.goldMid:C.goldFaint,textTransform:"uppercase",lineHeight:1.3 }}>{slot.name||"Empty"}</div>
-                </button>
-                <button onClick={()=>setEditingSfxIdx(i)} aria-label={`Edit sound slot ${i+1}`}
-                  style={{ position:"absolute",top:4,right:5,fontSize:10,color:C.goldFaint,cursor:"pointer",background:"transparent",border:"none",outline:"none",padding:"2px 4px" }}>✎</button>
-              </div>
-            );
-          })}
-        </div>
-        {showSfxPlayer&&(
-          <div>
-            <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6 }}>
-              <div style={{ fontFamily:"Cinzel,serif",fontSize:9,letterSpacing:"0.15em",color:C.goldDim,textTransform:"uppercase" }}>SFX Player</div>
-              <Btn variant="ghost" onClick={()=>setShowSfxPlayer(false)} style={{ padding:"2px 7px",fontSize:10 }}>hide</Btn>
-            </div>
-            <div style={{ height:62,borderRadius:7,overflow:"hidden" }}>
-              <div id="sfx-player" style={{ width:"100%",height:"100%" }}/>
-            </div>
+      {/* Volume + Soundboard — one row */}
+      <div style={{ flexShrink:0, display:"grid", gridTemplateColumns:"auto 1fr", gap:8, alignItems:"start" }}>
+        {/* Volumes */}
+        <Card style={{ padding:"10px 14px" }}>
+          <div style={{ fontFamily:"Cinzel,serif",fontSize:8,letterSpacing:"0.15em",color:C.goldDim,textTransform:"uppercase",marginBottom:8 }}>Volume</div>
+          <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:14,minWidth:280 }}>
+            <RangeWithTrack id="mv" label="Music"   value={musicVol}   onChange={setMusicVol}/>
+            <RangeWithTrack id="av" label="Ambient" value={ambientVol} onChange={setAmbientVol}/>
+            <RangeWithTrack id="sv" label="SFX"     value={sfxVol}     onChange={setSfxVol}/>
           </div>
-        )}
-        {!showSfxPlayer&&<div id="sfx-player" style={{ display:"none" }}/>}
-      </Card>
+        </Card>
+        {/* Soundboard */}
+        <Card style={{ padding:"10px 12px" }}>
+          <div style={{ fontFamily:"Cinzel,serif",fontSize:8,letterSpacing:"0.15em",color:C.goldDim,textTransform:"uppercase",marginBottom:8 }}>
+            Soundboard <span style={{ fontSize:7,color:C.goldFaint,textTransform:"none",marginLeft:4 }}>✎ to set up</span>
+          </div>
+          <div style={{ display:"grid",gridTemplateColumns:"repeat(8,1fr)",gap:5 }}>
+            {soundboard.map((slot,i)=>{
+              const hasUrl = !!getYouTubeId(slot.url);
+              return (
+                <div key={i} style={{ position:"relative" }}>
+                  <button onClick={()=>hasUrl?playSfx(slot):setEditingSfxIdx(i)}
+                    style={{ width:"100%",background:hasUrl?"rgba(232,217,160,0.07)":C.surfaceHigh,border:`1px solid ${hasUrl?"rgba(232,217,160,0.22)":C.border}`,borderRadius:7,padding:"8px 4px",textAlign:"center",cursor:"pointer",transition:"all 0.2s",display:"flex",flexDirection:"column",alignItems:"center",gap:2,outline:"none" }}>
+                    <div style={{ fontSize:16 }}>{slot.icon||"♦"}</div>
+                    <div style={{ fontFamily:"Cinzel,serif",fontSize:7,color:hasUrl?C.goldMid:C.goldFaint,textTransform:"uppercase",lineHeight:1.2,maxWidth:50,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>{slot.name||"—"}</div>
+                  </button>
+                  <button onClick={()=>setEditingSfxIdx(i)} style={{ position:"absolute",top:2,right:2,fontSize:7,color:C.goldFaint,background:"transparent",border:"none",cursor:"pointer",padding:"1px",outline:"none" }}>✎</button>
+                </div>
+              );
+            })}
+          </div>
+          {showSfxPlayer&&(
+            <div style={{ marginTop:8 }}>
+              <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4 }}>
+                <div style={{ fontSize:8,fontFamily:"Cinzel,serif",color:C.goldFaint,textTransform:"uppercase",letterSpacing:"0.1em" }}>SFX</div>
+                <button onClick={()=>setShowSfxPlayer(false)} style={{ fontSize:9,color:C.goldFaint,background:"transparent",border:"none",cursor:"pointer",outline:"none" }}>✕</button>
+              </div>
+              <div style={{ height:50,borderRadius:6,overflow:"hidden" }}><div id="sfx-player" style={{ width:"100%",height:"100%" }}/></div>
+            </div>
+          )}
+          {!showSfxPlayer&&<div id="sfx-player" style={{ display:"none" }}/>}
+        </Card>
+      </div>
 
-      {/* ── Spotify ── */}
-      <SpotifyPanel
-        auth={spotifyAuth} player={spotifyPlayer}
-        spotifyVol={spotifyVol} setSpotifyVol={setSpotifyVol}
-        spotifyInput={spotifyInput} setSpotifyInput={setSpotifyInput}
-        onLoadSpotify={onLoadSpotify}
-      />
+      {/* Spotify — fills remaining height, results scroll internally */}
+      <div style={{ flex:1, minHeight:0, overflow:"hidden" }}>
+        <SpotifyPanel
+          auth={spotifyAuth} player={spotifyPlayer}
+          spotifyVol={spotifyVol} setSpotifyVol={setSpotifyVol}
+          spotifyInput={spotifyInput} setSpotifyInput={setSpotifyInput}
+          onLoadSpotify={onLoadSpotify}
+        />
+      </div>
+
     </div>
   );
 }
@@ -984,7 +991,7 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
   function queueUri(uri) { player.addToQueue(uri); }
 
   if (!auth.isConnected) return (
-    <Card style={{ marginTop:14, textAlign:"center", padding:"32px 24px" }}>
+    <Card style={{ height:"100%", textAlign:"center", padding:"32px 24px", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" }}>
       <div style={{ fontSize:36,marginBottom:14 }}>🎵</div>
       <div style={{ fontFamily:"Cinzel,serif",fontSize:15,color:C.gold,letterSpacing:"0.1em",marginBottom:8 }}>Spotify Premium</div>
       <div style={{ fontSize:13,color:C.goldDim,marginBottom:22,lineHeight:1.7,maxWidth:380,margin:"0 auto 22px" }}>
@@ -997,7 +1004,7 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
   );
 
   if (!player.ready) return (
-    <Card style={{ marginTop:14, textAlign:"center", padding:"24px" }}>
+    <Card style={{ height:"100%", textAlign:"center", padding:"24px", display:"flex", alignItems:"center", justifyContent:"center" }}>
       <div style={{ fontSize:13,color:C.goldDim,fontStyle:"italic" }}>Initialising Spotify player… <br/><span style={{ fontSize:11,color:C.goldFaint }}>This may take a few seconds.</span></div>
     </Card>
   );
@@ -1005,9 +1012,9 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
   const pct = player.duration > 0 ? player.position/player.duration : 0;
 
   return (
-    <Card style={{ marginTop:14 }}>
+    <Card style={{ height:"100%", display:"flex", flexDirection:"column", overflow:"hidden" }}>
       {/* Header */}
-      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14 }}>
+      <div style={{ flexShrink:0, display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10 }}>
         <div style={{ display:"flex",alignItems:"center",gap:8 }}>
           <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.18em",color:C.gold,textTransform:"uppercase" }}>Spotify</div>
           <div style={{ width:7,height:7,borderRadius:"50%",background:"#1db954",boxShadow:"0 0 5px #1db954" }}/>
@@ -1101,7 +1108,8 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
       )}
 
       {/* Browse tabs */}
-      <div style={{ borderTop:`1px solid ${C.border}`,paddingTop:14,marginTop:4 }}>
+      {/* Browse — flex:1 so it fills remaining card height, results scroll inside */}
+      <div style={{ flex:1, minHeight:0, borderTop:`1px solid ${C.border}`,paddingTop:12,marginTop:4, display:"flex", flexDirection:"column", overflow:"hidden" }}>
         <div style={{ display:"flex",gap:6,marginBottom:12 }}>
           {[["search","🔍 Search"],["playlists","📚 Your Playlists"],["recent","🕐 Recently Played"],["url","🔗 Paste URL"]].map(([id,label])=>(
             <button key={id} onClick={()=>switchBrowse(id)}
@@ -1114,12 +1122,12 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
         {/* Search */}
         {browseTab==="search"&&(
           <>
-            <div style={{ display:"flex",gap:8,marginBottom:10 }}>
+            <div style={{ display:"flex",gap:8,marginBottom:8,flexShrink:0 }}>
               <TextInput value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doSearch()} placeholder="Search tracks, playlists, artists…"/>
               <Btn variant="primary" onClick={doSearch} style={{ whiteSpace:"nowrap",flexShrink:0 }}>{searching?"…":"Search"}</Btn>
             </div>
             {searchResults&&(
-              <div style={{ background:C.surfaceHigh,borderRadius:9,overflow:"hidden" }}>
+              <div style={{ background:C.surfaceHigh,borderRadius:9,overflow:"hidden",flex:1,minHeight:0,overflowY:"auto" }}>
                 {searchResults.tracks?.items?.length>0&&(
                   <>
                     <div style={{ padding:"8px 14px",fontSize:9,fontFamily:"Cinzel,serif",letterSpacing:"0.1em",color:C.goldFaint,textTransform:"uppercase",borderBottom:`1px solid ${C.border}` }}>Tracks</div>
@@ -1142,7 +1150,7 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
 
         {/* My Playlists */}
         {browseTab==="playlists"&&(
-          <div style={{ background:C.surfaceHigh,borderRadius:9,overflow:"hidden" }}>
+          <div style={{ background:C.surfaceHigh,borderRadius:9,flex:1,minHeight:0,overflowY:"auto" }}>
             {!myPlaylists
               ? <div style={{ padding:"14px",textAlign:"center",color:C.goldDim,fontSize:13,fontStyle:"italic" }}>Loading…</div>
               : myPlaylists.items?.map(pl=><SpotifyPlaylistRow key={pl.id} pl={pl} onPlay={playUri}/>)
@@ -1150,9 +1158,8 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
           </div>
         )}
 
-        {/* Recently Played */}
         {browseTab==="recent"&&(
-          <div style={{ background:C.surfaceHigh,borderRadius:9,overflow:"hidden" }}>
+          <div style={{ background:C.surfaceHigh,borderRadius:9,flex:1,minHeight:0,overflowY:"auto" }}>
             {!recentlyPlayed
               ? <div style={{ padding:"14px",textAlign:"center",color:C.goldDim,fontSize:13,fontStyle:"italic" }}>Loading…</div>
               : recentlyPlayed.items?.map((item,i)=><SpotifyTrackRow key={i} track={item.track} onPlay={playUri} onQueue={queueUri} showQueue={true}/>)
@@ -1687,19 +1694,29 @@ export default function App() {
     setMusicInput(sd.musicUrl||""); setAmbientInput(sd.ambientUrl||"");
   },[activeSceneId]);
 
-  // Keyboard shortcuts (only when not focused in a text field)
+  // Stable refs so the keyboard handler never has a stale closure
+  const scenesRef      = useRef(scenes);
+  const activeSceneRef = useRef(activeScene);
+  useEffect(()=>{ scenesRef.current=scenes; },[scenes]);
+  useEffect(()=>{ activeSceneRef.current=activeScene; },[activeScene]);
+
+  // Keyboard shortcuts — stable listener, reads state via refs
   useEffect(()=>{
     function onKey(e) {
-      if(["INPUT","TEXTAREA","SELECT"].includes(e.target.tagName)) return;
+      const tag=e.target.tagName;
+      if(["INPUT","TEXTAREA","SELECT","BUTTON"].includes(tag)) return;
       if(e.key==="Escape") setPresent(false);
       if(e.key==="p"||e.key==="P") setPresent(true);
-      if(e.key===" ") { e.preventDefault(); if(activeScene) setIsPlaying(p=>!p); }
+      if(e.key===" ") {
+        e.preventDefault();
+        if(activeSceneRef.current) setIsPlaying(p=>!p);
+      }
       const n=parseInt(e.key);
-      if(!isNaN(n)&&n>=1&&n<=scenes.length) handleSceneClick(scenes[n-1]);
+      if(!isNaN(n)&&n>=1&&n<=scenesRef.current.length) handleSceneClick(scenesRef.current[n-1]);
     }
     window.addEventListener("keydown",onKey);
     return()=>window.removeEventListener("keydown",onKey);
-  },[scenes,activeSceneId,activeScene]);
+  },[]); // eslint-disable-line — intentionally stable
 
   function fade(from, to, ms, done) {
     if(fadeRef.current) clearInterval(fadeRef.current);
@@ -1840,8 +1857,8 @@ export default function App() {
           })}
         </div>
 
-        {/* Tab panel — scrollable, takes all remaining height */}
-        <div role="tabpanel" id={`panel-${activeTab}`} style={{ flex:1, overflowY:"auto", padding:"20px 24px 24px" }}>
+        {/* Tab panel — fills remaining space, NO outer scroll */}
+        <div role="tabpanel" id={`panel-${activeTab}`} style={{ flex:1, overflow:"hidden", padding:"12px 20px 8px", display:"flex", flexDirection:"column" }}>
           {activeTab==="stage"&&(
             <StageScreen
               scenes={scenes} sceneData={sceneData} activeSceneId={activeSceneId}
@@ -1899,8 +1916,8 @@ export default function App() {
           {activeTab==="help"&&<HelpScreen/>}
         </div>
 
-        {/* Footer */}
-        <div style={{ textAlign:"center",fontSize:10,color:C.goldFaint,fontStyle:"italic",paddingTop:"1.5rem",marginTop:"1rem",borderTop:`1px solid ${C.border}` }}>
+        {/* Tiny footer bar — always visible, never scrolls away */}
+        <div style={{ flexShrink:0, textAlign:"center", fontSize:9, color:C.goldFaint, fontStyle:"italic", padding:"5px 0 6px", borderTop:`1px solid ${C.border}` }}>
           Andulaak Atmosphere Board · The calm is here. It won't last.
         </div>
       </div>{/* end main UI flex column */}
