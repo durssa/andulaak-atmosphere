@@ -49,6 +49,7 @@ const EMPTY_SDATA = { musicUrl:"", ambientUrl:"", bgImage:null, notes:"", spotif
 
 // ─── Spotify constants ────────────────────────────────────────────────────
 const SPOTIFY_CLIENT_ID  = "96b844a4f9a141929ee518cac9a33137";
+const SPOTIFY_SCOPE_VER  = "v3"; // bump when scopes change — forces reconnect for existing users
 const SPOTIFY_REDIRECT   = typeof window !== "undefined" ? window.location.origin : "";
 const SPOTIFY_SCOPES     = "streaming user-read-email user-read-private playlist-read-private playlist-read-collaborative user-read-recently-played user-library-read user-library-modify user-modify-playback-state";
 
@@ -211,13 +212,22 @@ function useSfxPlayer(containerId) {
 }
 
 // ─── Spotify auth hook ────────────────────────────────────────────────────
+function spClearTokens() {
+  ["sp_token","sp_refresh","sp_expires","sp_verifier","sp_scope_ver"].forEach(k => localStorage.removeItem(k));
+}
+
 function useSpotifyAuth() {
-  const stored = localStorage.getItem("sp_token");
-  const exp    = Number(localStorage.getItem("sp_expires") || 0);
-  const [token, setToken] = useState(stored && Date.now() < exp ? stored : null);
+  const stored    = localStorage.getItem("sp_token");
+  const exp       = Number(localStorage.getItem("sp_expires") || 0);
+  const scopeVer  = localStorage.getItem("sp_scope_ver");
+  // If token exists but was issued with old scopes, clear it and require reconnect
+  const tokenValid = stored && Date.now() < exp && scopeVer === SPOTIFY_SCOPE_VER;
+  if (stored && !tokenValid) spClearTokens();
+
+  const [token, setToken] = useState(tokenValid ? stored : null);
   const [loading, setLoading] = useState(false);
 
-  // Handle redirect callback (code in URL after Spotify auth)
+  // Handle redirect callback
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const code = params.get("code");
@@ -232,6 +242,7 @@ function useSpotifyAuth() {
           localStorage.setItem("sp_token", d.access_token);
           localStorage.setItem("sp_refresh", d.refresh_token);
           localStorage.setItem("sp_expires", String(Date.now() + (d.expires_in - 60) * 1000));
+          localStorage.setItem("sp_scope_ver", SPOTIFY_SCOPE_VER);
           localStorage.removeItem("sp_verifier");
           setToken(d.access_token);
         }
@@ -250,6 +261,7 @@ function useSpotifyAuth() {
       if (d.access_token) {
         localStorage.setItem("sp_token", d.access_token);
         localStorage.setItem("sp_expires", String(Date.now() + (d.expires_in - 60) * 1000));
+        localStorage.setItem("sp_scope_ver", SPOTIFY_SCOPE_VER);
         if (d.refresh_token) localStorage.setItem("sp_refresh", d.refresh_token);
         setToken(d.access_token);
       }
@@ -258,6 +270,7 @@ function useSpotifyAuth() {
   }, [token]);
 
   async function login() {
+    spClearTokens();
     const v = await spVerifier();
     const c = await spChallenge(v);
     localStorage.setItem("sp_verifier", v);
@@ -265,10 +278,7 @@ function useSpotifyAuth() {
     window.location.href = `https://accounts.spotify.com/authorize?${p}`;
   }
 
-  function logout() {
-    ["sp_token","sp_refresh","sp_expires","sp_verifier"].forEach(k => localStorage.removeItem(k));
-    setToken(null);
-  }
+  function logout() { spClearTokens(); setToken(null); }
 
   return { token, isConnected:!!token, loading, login, logout };
 }
@@ -298,7 +308,17 @@ function useSpotifyPlayer(token) {
         getOAuthToken: cb => cb(tokenRef.current),
         volume: 0.6,
       });
-      player.addListener("ready", ({ device_id }) => { deviceIdRef.current = device_id; setReady(true); });
+      player.addListener("ready", ({ device_id }) => {
+        deviceIdRef.current = device_id;
+        setReady(true);
+        // Fetch initial queue as soon as player is ready
+        setTimeout(() => {
+          if (!tokenRef.current) return;
+          fetch("https://api.spotify.com/v1/me/player/queue", {
+            headers:{ Authorization:`Bearer ${tokenRef.current}` }
+          }).then(r=>r.ok?r.json():null).then(d=>{ if(d?.queue) setNextTracks(d.queue.slice(0,10)); }).catch(()=>{});
+        }, 1500);
+      });
       player.addListener("not_ready", () => setReady(false));
       player.addListener("player_state_changed", s => {
         if (!s) return;
@@ -1392,117 +1412,143 @@ function useTimer() {
 }
 
 // ─── Session plan screen ───────────────────────────────────────────────────
-function PlanScreen({ scenes, sessionPlan, setSessionPlan, activeSceneId, onSceneClick }) {
-  const activeScene = scenes.find(s=>s.id===activeSceneId)??null;
-  const currentStep = sessionPlan.findIndex(id=>id===activeSceneId);
+function PlanScreen({ scenes, sessionPlan, setSessionPlan, planStep, setPlanStep, activeSceneId, onSceneClick }) {
+  // planStep is the authoritative index — does NOT depend on activeSceneId matching
+  // This means the same scene can appear multiple times and navigation still works correctly
+  const started  = planStep >= 0;
+  const finished = planStep >= sessionPlan.length;
+  const canPrev  = planStep > 0;
+  const canNext  = planStep < sessionPlan.length - 1;
 
-  function addToplan(sceneId) {
-    setSessionPlan(prev=>[...prev,sceneId]);
+  function goToStep(idx) {
+    if (idx < 0 || idx >= sessionPlan.length) return;
+    const scene = scenes.find(s => s.id === sessionPlan[idx]);
+    if (scene) { onSceneClick(scene); setPlanStep(idx); }
   }
+  function beginSession() { goToStep(0); }
+  function prevStep()     { goToStep(planStep - 1); }
+  function nextStep()     { goToStep(planStep + 1); }
+  function addScene(sceneId) { setSessionPlan(prev => [...prev, sceneId]); }
   function removeStep(idx) {
-    setSessionPlan(prev=>prev.filter((_,i)=>i!==idx));
+    setSessionPlan(prev => prev.filter((_,i) => i !== idx));
+    if (planStep >= idx && planStep > 0) setPlanStep(p => p - 1);
   }
   function moveStep(idx, dir) {
-    setSessionPlan(prev=>{
-      const next=[...prev];
-      const target=idx+dir;
-      if(target<0||target>=next.length) return next;
-      [next[idx],next[target]]=[next[target],next[idx]];
+    setSessionPlan(prev => {
+      const next = [...prev];
+      const target = idx + dir;
+      if (target < 0 || target >= next.length) return next;
+      [next[idx], next[target]] = [next[target], next[idx]];
       return next;
     });
+    if (planStep === idx) setPlanStep(idx + dir);
+    else if (planStep === idx + dir) setPlanStep(idx);
   }
-  function goToStep(idx) {
-    const scene=scenes.find(s=>s.id===sessionPlan[idx]);
-    if(scene) onSceneClick(scene);
-  }
+  function clearAll() { setSessionPlan([]); setPlanStep(-1); }
+  function duplicateStep(idx) { setSessionPlan(prev => [...prev.slice(0,idx+1), prev[idx], ...prev.slice(idx+1)]); }
+
+  const progress = sessionPlan.length > 0 ? ((planStep + 1) / sessionPlan.length) * 100 : 0;
 
   return (
-    <div>
-      {/* Progress bar */}
-      {sessionPlan.length>0&&(
-        <Card style={{ marginBottom:20 }}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
-            <div>
-              <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.18em",color:C.gold,textTransform:"uppercase" }}>Session Progress</div>
-              <div style={{ fontSize:13,color:C.goldDim,marginTop:3,fontStyle:"italic" }}>
-                {currentStep>=0 ? `Scene ${currentStep+1} of ${sessionPlan.length}` : `${sessionPlan.length} scenes planned`}
-              </div>
-            </div>
-            <div style={{ display:"flex", gap:8 }}>
-              {currentStep>=0&&currentStep<sessionPlan.length-1&&(
-                <Btn variant="primary" onClick={()=>goToStep(currentStep+1)}>Next Scene →</Btn>
-              )}
-              {currentStep<0&&sessionPlan.length>0&&(
-                <Btn variant="primary" onClick={()=>goToStep(0)}>▶ Begin Session</Btn>
-              )}
-            </div>
-          </div>
-          {/* Progress dots */}
-          <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-            {sessionPlan.map((id,i)=>{
-              const sc=scenes.find(s=>s.id===id);
-              const isDone=currentStep>i;
-              const isCurrent=currentStep===i;
-              return (
-                <div key={i} onClick={()=>goToStep(i)} style={{ display:"flex",alignItems:"center",gap:5,padding:"5px 10px",borderRadius:7,background:isCurrent?"rgba(232,217,160,0.12)":isDone?"rgba(74,140,106,0.12)":"transparent",border:`1px solid ${isCurrent?C.borderFocus:isDone?"rgba(74,140,106,0.3)":C.border}`,cursor:"pointer",transition:"all 0.2s" }}>
-                  <span style={{ fontSize:14 }}>{sc?.icon??"?"}</span>
-                  <span style={{ fontFamily:"Cinzel,serif",fontSize:9,letterSpacing:"0.06em",color:isCurrent?C.gold:isDone?"#4a8c6a":C.goldDim,textTransform:"uppercase" }}>{sc?.name??"Unknown"}</span>
-                  {isDone&&<span style={{ fontSize:10,color:"#4a8c6a" }}>✓</span>}
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-      )}
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", gap:10 }}>
 
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
-        {/* Plan queue */}
-        <div>
-          <div style={{ fontFamily:"Cinzel,serif",fontSize:10,letterSpacing:"0.18em",color:C.goldDim,textTransform:"uppercase",marginBottom:12 }}>
-            Tonight's Sequence
+      {/* Navigation controls */}
+      <Card style={{ flexShrink:0, padding:"12px 16px" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:10 }}>
+          <div style={{ flex:1 }}>
+            <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.15em",color:C.gold,textTransform:"uppercase" }}>Session Plan</div>
+            <div style={{ fontSize:12,color:C.goldDim,marginTop:2,fontStyle:"italic" }}>
+              {sessionPlan.length === 0 ? "No scenes planned yet" :
+               !started ? `${sessionPlan.length} scene${sessionPlan.length>1?"s":""} queued — ready to begin` :
+               finished ? "Session complete" :
+               `Scene ${planStep+1} of ${sessionPlan.length} — ${scenes.find(s=>s.id===sessionPlan[planStep])?.name??""}`}
+            </div>
           </div>
-          {sessionPlan.length===0?(
-            <Card style={{ textAlign:"center",padding:"32px 20px",color:C.goldDim,fontStyle:"italic",fontSize:14 }}>
-              Add scenes from the list →
-            </Card>
-          ):(
-            <div style={{ display:"flex",flexDirection:"column",gap:8 }}>
+          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+            {started && canPrev && <Btn variant="default" onClick={prevStep} style={{ padding:"7px 12px", fontSize:11 }}>← Prev</Btn>}
+            {!started && sessionPlan.length > 0 && <Btn variant="primary" onClick={beginSession} style={{ fontSize:11 }}>▶ Begin Session</Btn>}
+            {started && !finished && canNext && <Btn variant="primary" onClick={nextStep} style={{ padding:"7px 14px", fontSize:11 }}>Next →</Btn>}
+            {started && <Btn variant="ghost" onClick={()=>setPlanStep(-1)} style={{ fontSize:10, color:C.goldFaint }}>Reset</Btn>}
+          </div>
+        </div>
+
+        {/* Progress bar */}
+        {sessionPlan.length > 0 && (
+          <>
+            <div style={{ height:4, background:C.surfaceHigh, borderRadius:2, overflow:"hidden", marginBottom:8 }}>
+              <div style={{ height:"100%", background:"linear-gradient(to right,#4a8c6a,#c4742a)", width:`${progress}%`, borderRadius:2, transition:"width 0.4s ease" }}/>
+            </div>
+            {/* Step dots */}
+            <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
               {sessionPlan.map((id,i)=>{
-                const sc=scenes.find(s=>s.id===id);
-                const isCurrent=currentStep===i;
+                const sc  = scenes.find(s=>s.id===id);
+                const done = started && i < planStep;
+                const curr = started && i === planStep;
                 return (
-                  <div key={i} style={{ display:"flex",alignItems:"center",gap:10,background:isCurrent?"rgba(232,217,160,0.08)":C.surface,border:`1px solid ${isCurrent?C.borderFocus:C.border}`,borderRadius:9,padding:"10px 14px",transition:"all 0.2s" }}>
-                    <span style={{ fontSize:11,color:C.goldFaint,fontFamily:"Cinzel,serif",minWidth:18 }}>{i+1}</span>
-                    <span style={{ fontSize:20 }}>{sc?.icon??"?"}</span>
-                    <span style={{ fontFamily:"Cinzel,serif",fontSize:11,color:isCurrent?C.gold:C.goldMid,flex:1,textTransform:"uppercase",letterSpacing:"0.06em" }}>{sc?.name??id}</span>
-                    <div style={{ display:"flex",gap:4 }}>
-                      <button onClick={()=>moveStep(i,-1)} disabled={i===0} style={{ background:"transparent",border:`1px solid ${C.border}`,borderRadius:5,padding:"3px 7px",color:C.goldDim,cursor:i===0?"not-allowed":"pointer",fontSize:12,opacity:i===0?0.3:1 }}>↑</button>
-                      <button onClick={()=>moveStep(i,1)}  disabled={i===sessionPlan.length-1} style={{ background:"transparent",border:`1px solid ${C.border}`,borderRadius:5,padding:"3px 7px",color:C.goldDim,cursor:i===sessionPlan.length-1?"not-allowed":"pointer",fontSize:12,opacity:i===sessionPlan.length-1?0.3:1 }}>↓</button>
-                      <button onClick={()=>removeStep(i)} style={{ background:"transparent",border:`1px solid rgba(180,60,60,0.25)`,borderRadius:5,padding:"3px 7px",color:"rgba(200,80,80,0.8)",cursor:"pointer",fontSize:12 }}>✕</button>
+                  <button key={i} onClick={()=>goToStep(i)}
+                    style={{ display:"flex",alignItems:"center",gap:4,padding:"4px 8px",borderRadius:6,background:curr?"rgba(232,217,160,0.14)":done?"rgba(74,140,106,0.12)":"transparent",border:`1px solid ${curr?C.borderFocus:done?"rgba(74,140,106,0.35)":C.border}`,cursor:"pointer",transition:"all 0.2s",outline:"none" }}>
+                    <span style={{ fontSize:12 }}>{sc?.icon??"?"}</span>
+                    <span style={{ fontFamily:"Cinzel,serif",fontSize:8,color:curr?C.gold:done?"#4a8c6a":C.goldDim,textTransform:"uppercase" }}>{i+1}</span>
+                    {done&&<span style={{ fontSize:9,color:"#4a8c6a" }}>✓</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </Card>
+
+      {/* Queue + Add scene */}
+      <div style={{ flex:1, minHeight:0, display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+
+        {/* Tonight's sequence */}
+        <div style={{ display:"flex", flexDirection:"column", minHeight:0 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, flexShrink:0 }}>
+            <div style={{ fontFamily:"Cinzel,serif",fontSize:9,letterSpacing:"0.18em",color:C.goldDim,textTransform:"uppercase" }}>Tonight's Sequence</div>
+            {sessionPlan.length>0&&<Btn variant="ghost" onClick={clearAll} style={{ fontSize:9,color:"rgba(180,80,80,0.65)",padding:"3px 8px" }}>Clear All</Btn>}
+          </div>
+          {sessionPlan.length===0 ? (
+            <Card style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", color:C.goldDim, fontStyle:"italic", fontSize:13 }}>
+              Add scenes from the right →
+            </Card>
+          ) : (
+            <div style={{ flex:1, minHeight:0, overflowY:"auto", display:"flex", flexDirection:"column", gap:6 }}>
+              {sessionPlan.map((id,i)=>{
+                const sc   = scenes.find(s=>s.id===id);
+                const curr = started && i === planStep;
+                const done = started && i < planStep;
+                return (
+                  <div key={i} style={{ display:"flex",alignItems:"center",gap:8,background:curr?"rgba(232,217,160,0.09)":C.surface,border:`1px solid ${curr?C.borderFocus:done?"rgba(74,140,106,0.3)":C.border}`,borderRadius:9,padding:"9px 12px",transition:"all 0.2s",flexShrink:0 }}>
+                    <span style={{ fontSize:10,color:curr?C.gold:done?"#4a8c6a":C.goldFaint,fontFamily:"Cinzel,serif",minWidth:20,textAlign:"center" }}>{done?"✓":i+1}</span>
+                    <button onClick={()=>goToStep(i)} style={{ fontSize:18,background:"transparent",border:"none",cursor:"pointer",padding:0,outline:"none" }}>{sc?.icon??"?"}</button>
+                    <span onClick={()=>goToStep(i)} style={{ fontFamily:"Cinzel,serif",fontSize:10,color:curr?C.gold:done?C.goldDim:C.goldMid,flex:1,textTransform:"uppercase",letterSpacing:"0.05em",cursor:"pointer",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis" }}>{sc?.name??id}</span>
+                    <div style={{ display:"flex",gap:3,flexShrink:0 }}>
+                      <button onClick={()=>moveStep(i,-1)} disabled={i===0} title="Move up" style={{ background:"transparent",border:`1px solid ${C.border}`,borderRadius:4,padding:"2px 6px",color:C.goldDim,cursor:i===0?"not-allowed":"pointer",fontSize:11,opacity:i===0?0.3:1,outline:"none" }}>↑</button>
+                      <button onClick={()=>moveStep(i,1)}  disabled={i===sessionPlan.length-1} title="Move down" style={{ background:"transparent",border:`1px solid ${C.border}`,borderRadius:4,padding:"2px 6px",color:C.goldDim,cursor:i===sessionPlan.length-1?"not-allowed":"pointer",fontSize:11,opacity:i===sessionPlan.length-1?0.3:1,outline:"none" }}>↓</button>
+                      <button onClick={()=>duplicateStep(i)} title="Duplicate" style={{ background:"transparent",border:`1px solid ${C.border}`,borderRadius:4,padding:"2px 5px",color:C.goldDim,cursor:"pointer",fontSize:10,outline:"none" }}>⎘</button>
+                      <button onClick={()=>removeStep(i)} title="Remove" style={{ background:"transparent",border:`1px solid rgba(180,60,60,0.3)`,borderRadius:4,padding:"2px 6px",color:"rgba(200,80,80,0.8)",cursor:"pointer",fontSize:11,outline:"none" }}>✕</button>
                     </div>
                   </div>
                 );
               })}
-              <Btn variant="ghost" onClick={()=>setSessionPlan([])} style={{ marginTop:4,fontSize:10,color:"rgba(180,80,80,0.7)" }}>Clear All</Btn>
             </div>
           )}
         </div>
 
-        {/* Scene picker */}
-        <div>
-          <div style={{ fontFamily:"Cinzel,serif",fontSize:10,letterSpacing:"0.18em",color:C.goldDim,textTransform:"uppercase",marginBottom:12 }}>
-            Add Scene
-          </div>
-          <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
+        {/* Add scene */}
+        <div style={{ display:"flex", flexDirection:"column", minHeight:0 }}>
+          <div style={{ fontFamily:"Cinzel,serif",fontSize:9,letterSpacing:"0.18em",color:C.goldDim,textTransform:"uppercase",marginBottom:8,flexShrink:0 }}>Add Scene</div>
+          <div style={{ flex:1, minHeight:0, overflowY:"auto", display:"flex", flexDirection:"column", gap:5 }}>
             {scenes.map(s=>(
-              <div key={s.id} style={{ display:"flex",alignItems:"center",gap:10,background:C.surface,border:`1px solid ${C.border}`,borderRadius:9,padding:"10px 14px" }}>
-                <span style={{ fontSize:20 }}>{s.icon}</span>
-                <span style={{ fontFamily:"Cinzel,serif",fontSize:11,color:C.goldMid,flex:1,textTransform:"uppercase",letterSpacing:"0.06em" }}>{s.name}</span>
-                <Btn variant="default" onClick={()=>addToplan(s.id)} style={{ fontSize:9,padding:"5px 12px" }}>+ Add</Btn>
+              <div key={s.id} style={{ display:"flex",alignItems:"center",gap:10,background:C.surface,border:`1px solid ${C.border}`,borderRadius:9,padding:"9px 12px",flexShrink:0 }}>
+                <span style={{ fontSize:18,flexShrink:0 }}>{s.icon}</span>
+                <span style={{ fontFamily:"Cinzel,serif",fontSize:10,color:C.goldMid,flex:1,textTransform:"uppercase",letterSpacing:"0.05em",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>{s.name}</span>
+                <Btn variant="default" onClick={()=>addScene(s.id)} style={{ fontSize:9,padding:"4px 10px",flexShrink:0 }}>+ Add</Btn>
               </div>
             ))}
           </div>
         </div>
+
       </div>
     </div>
   );
@@ -1569,6 +1615,24 @@ const HELP_SECTIONS = [
       { q: "What saves automatically", a: "Everything: active scene, tension, day/night, all volume levels, per-scene audio URLs, per-scene background images, scene notes, soundboard slots, and any custom scenes you created." },
       { q: "How it saves", a: "Browser local storage — no account, no server. Refreshing or closing the tab loses nothing. Everything restores exactly as you left it." },
       { q: "Clearing data", a: "Open your browser's dev tools (F12 → Application → Local Storage) and delete the 'andulaak_' keys to reset to defaults." },
+    ],
+  },
+  {
+    title: "Spotify",
+    icon: "🎵",
+    items: [
+      { q: "Connecting Spotify", a: "Go to the Audio tab and click 'Connect Spotify →'. You'll be redirected to Spotify to log in and grant permissions. After approving, you land right back in the app. Requires Spotify Premium." },
+      { q: "Reconnecting / upgrading permissions", a: "If playlists or recently played aren't loading, click Disconnect then Connect Spotify again. This gets a fresh token with all required permissions. Old tokens from before the scope update won't have playlist or library access." },
+      { q: "Now Playing", a: "Once connected and playing, the now-playing card shows album art, track name, artist, and album. The ♥ button likes/unlikes the current track in your Spotify library." },
+      { q: "Progress bar", a: "The green bar below the track info shows playback position. Click anywhere on it to seek to that position in the track." },
+      { q: "Transport controls", a: "⏮ skip to previous track · ▶/⏸ play/pause · ⏭ skip to next. All controls affect the 'Andulaak Atmosphere Board' device in your Spotify Connect list." },
+      { q: "Shuffle and Repeat", a: "Both buttons show their current state clearly. Shuffle shows On/Off with a green glow when active. Repeat cycles: Off → Repeat All (🔁) → Repeat One (🔂). State syncs from Spotify in real time." },
+      { q: "Volume", a: "The volume slider controls the Spotify SDK player directly. It's separate from YouTube volume. Changes apply instantly." },
+      { q: "Up Next queue", a: "Shows the next 10 tracks in the current queue. Each track has a ▶ Play button to jump to it immediately, and a +Q button to add it to the Spotify queue. Updates automatically when the track changes." },
+      { q: "Search", a: "Type any artist, song, or playlist name in the Search tab and press Enter or click Search. Results show tracks (with Play and Add-to-Queue) and playlists (click to play the whole playlist). Results are scrollable within the panel." },
+      { q: "Your Playlists", a: "Shows up to 25 of your Spotify playlists. Click ▶ on any playlist to start playing it. Loads on demand when you switch to the Playlists tab." },
+      { q: "Recently Played", a: "Your last 12 played tracks. Each has a ▶ Play and +Q button. Loads on demand when you switch to the tab." },
+      { q: "Paste URL", a: "If you have a direct Spotify URL (track, playlist, album), paste it in the URL tab and click Play. Accepts any open.spotify.com link." },
     ],
   },
 ];
@@ -1648,6 +1712,7 @@ export default function App() {
   const [soundboard, setSoundboard]       = useLocalStorage("andulaak_soundboard", DEFAULT_SOUNDBOARD);
   const [presets, setPresets]             = useLocalStorage("andulaak_presets", DEFAULT_PRESETS);
   const [sessionPlan, setSessionPlan]     = useLocalStorage("andulaak_plan", []);
+  const [planStep, setPlanStep]           = useLocalStorage("andulaak_planStep", -1);
   const [spotifyVol, setSpotifyVol]       = useLocalStorage("andulaak_spotifyVol", 70);
   const [activeTab, setActiveTab]         = useLocalStorage("andulaak_tab", "stage");
 
@@ -1902,6 +1967,7 @@ export default function App() {
           {activeTab==="plan"&&(
             <PlanScreen
               scenes={scenes} sessionPlan={sessionPlan} setSessionPlan={setSessionPlan}
+              planStep={planStep} setPlanStep={setPlanStep}
               activeSceneId={activeSceneId} onSceneClick={handleSceneClick}
             />
           )}
