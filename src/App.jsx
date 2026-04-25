@@ -20,8 +20,18 @@ const TABS = [
   { id: "stage",  label: "Stage" },
   { id: "audio",  label: "Audio" },
   { id: "notes",  label: "Notes" },
+  { id: "plan",   label: "Plan" },
   { id: "scenes", label: "Scenes" },
   { id: "help",   label: "Guide" },
+];
+
+const DEFAULT_PRESETS = [
+  { id:"p1", name:"Rest",     icon:"🌙", tension:8,   dayNight:15 },
+  { id:"p2", name:"Travel",   icon:"🛤️", tension:22,  dayNight:58 },
+  { id:"p3", name:"Uneasy",   icon:"⚠️", tension:48,  dayNight:30 },
+  { id:"p4", name:"Combat",   icon:"⚔️", tension:82,  dayNight:18 },
+  { id:"p5", name:"Boss",     icon:"💀", tension:100, dayNight:5  },
+  { id:"p6", name:"Custom",   icon:"⭐", tension:50,  dayNight:50 },
 ];
 
 const DEFAULT_SCENES = [
@@ -401,7 +411,7 @@ function SfxModal({ slot, index, onSave, onClose }) {
 }
 
 // ─── Tab screens ───────────────────────────────────────────────────────────
-function StageScreen({ scenes, sceneData, activeSceneId, onSceneClick, tension, setTension, dayNight, setDayNight, musicVol, ambientVol, isPlaying, setIsPlaying, tensionColor }) {
+function StageScreen({ scenes, sceneData, activeSceneId, onSceneClick, tension, setTension, dayNight, setDayNight, musicVol, ambientVol, isPlaying, setIsPlaying, tensionColor, presets, onEditPreset, timer }) {
   const activeScene = scenes.find(s=>s.id===activeSceneId)??null;
   const t = tension/100;
 
@@ -472,6 +482,54 @@ function StageScreen({ scenes, sceneData, activeSceneId, onSceneClick, tension, 
             trackColor="linear-gradient(to right,#0a0a1a,#2a1a4a,#6a3820,#d4843a,#f0c060)"
           />
           <div style={{ textAlign:"center",marginTop:8,fontSize:12,color:C.goldMid,fontStyle:"italic" }}>{getDayLabel(dayNight)}</div>
+        </Card>
+      </div>
+
+      {/* ── Mood Presets ── */}
+      <div style={{ marginTop:20 }}>
+        <div style={{ fontFamily:"Cinzel,serif",fontSize:10,letterSpacing:"0.18em",color:C.goldDim,textTransform:"uppercase",marginBottom:12 }}>
+          Mood Presets <span style={{ fontSize:9,color:C.goldFaint,letterSpacing:"0.06em",textTransform:"none",marginLeft:8 }}>click to apply · ✎ to customise</span>
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:`repeat(${presets.length},1fr)`, gap:8 }}>
+          {presets.map(p=>{
+            const isActive = tension===p.tension&&dayNight===p.dayNight;
+            return (
+              <div key={p.id} style={{ position:"relative" }}>
+                <button onClick={()=>{ setTension(p.tension); setDayNight(p.dayNight); }} aria-label={`Apply ${p.name} preset`}
+                  style={{ width:"100%",background:isActive?"rgba(232,217,160,0.1)":C.surface,border:`1px solid ${isActive?C.borderFocus:C.border}`,borderRadius:9,padding:"12px 8px",cursor:"pointer",textAlign:"center",transition:"all 0.2s",outline:"none" }}>
+                  <div style={{ fontSize:20,marginBottom:5 }}>{p.icon}</div>
+                  <div style={{ fontFamily:"Cinzel,serif",fontSize:9,letterSpacing:"0.08em",color:isActive?C.gold:C.goldMid,textTransform:"uppercase" }}>{p.name}</div>
+                  <div style={{ fontSize:9,color:C.goldFaint,marginTop:3 }}>T:{p.tension} · {getDayIcon(p.dayNight)}</div>
+                </button>
+                <button onClick={()=>onEditPreset(p)} aria-label={`Edit ${p.name} preset`}
+                  style={{ position:"absolute",top:4,right:5,fontSize:9,color:C.goldFaint,background:"transparent",border:"none",cursor:"pointer",padding:"2px 4px",outline:"none" }}>✎</button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── Encounter Timer ── */}
+      <div style={{ marginTop:20 }}>
+        <div style={{ fontFamily:"Cinzel,serif",fontSize:10,letterSpacing:"0.18em",color:C.goldDim,textTransform:"uppercase",marginBottom:12 }}>
+          Encounter Timer
+        </div>
+        <Card style={{ display:"flex",alignItems:"center",gap:20,flexWrap:"wrap" }}>
+          <div style={{ fontFamily:"Cinzel,serif",fontSize:36,letterSpacing:"0.1em",color:timer.running?C.gold:C.goldDim,minWidth:100,fontVariantNumeric:"tabular-nums",transition:"color 0.3s" }}>
+            {timer.display}
+          </div>
+          <div style={{ textAlign:"center" }}>
+            <div style={{ fontSize:11,color:C.goldFaint,marginBottom:3 }}>D&amp;D Round</div>
+            <div style={{ fontFamily:"Cinzel,serif",fontSize:28,color:getTensionColor(tension),letterSpacing:"0.05em" }}>{timer.round}</div>
+          </div>
+          <div style={{ flex:1 }}/>
+          <div style={{ display:"flex",gap:8,flexWrap:"wrap" }}>
+            <Btn variant={timer.running?"default":"primary"} onClick={timer.toggle}>
+              {timer.running?"⏸ Pause":"▶ Start"}
+            </Btn>
+            <Btn variant="default" onClick={timer.nextRound}>+ Round</Btn>
+            <Btn variant="ghost" onClick={timer.reset} style={{ color:"rgba(180,80,80,0.7)" }}>Reset</Btn>
+          </div>
         </Card>
       </div>
     </div>
@@ -614,9 +672,30 @@ function NotesScreen({ scenes, activeSceneId, setActiveSceneId, sceneData, setSc
   );
 }
 
+const EXPORT_KEYS = ["andulaak_tension","andulaak_musicVol","andulaak_ambientVol","andulaak_sfxVol","andulaak_dayNight","andulaak_activeSceneId","andulaak_sceneData","andulaak_scenes","andulaak_soundboard","andulaak_presets","andulaak_plan","andulaak_tab"];
+
+function exportSettings() {
+  const data = {};
+  EXPORT_KEYS.forEach(k=>{ const v=localStorage.getItem(k); if(v) data[k]=JSON.parse(v); });
+  const blob = new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href=url; a.download=`andulaak-${new Date().toISOString().slice(0,10)}.json`; a.click();
+  URL.revokeObjectURL(url);
+}
+
 function ScenesScreen({ scenes, setScenes, sceneData, setSceneData, activeSceneId, setActiveSceneId, onEditScene, editingScene, setEditingScene }) {
-  const fileInputRef = useRef(null);
-  const uploadRef = useRef(null);
+  const fileInputRef  = useRef(null);
+  const importRef     = useRef(null);
+  const uploadRef     = useRef(null);
+
+  function handleImport(e) {
+    const file=e.target.files[0]; if(!file) return;
+    const reader=new FileReader();
+    reader.onload=ev=>{ try { const d=JSON.parse(ev.target.result); Object.entries(d).forEach(([k,v])=>localStorage.setItem(k,JSON.stringify(v))); window.location.reload(); } catch { alert("Invalid file."); } };
+    reader.readAsText(file);
+    e.target.value="";
+  }
 
   async function handleUpload(e) {
     const file = e.target.files[0];
@@ -632,12 +711,17 @@ function ScenesScreen({ scenes, setScenes, sceneData, setSceneData, activeSceneI
   return (
     <div>
       <input ref={fileInputRef} type="file" accept="image/*" onChange={handleUpload} style={{ display:"none" }}/>
+      <input ref={importRef} type="file" accept=".json" onChange={handleImport} style={{ display:"none" }}/>
 
-      <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16 }}>
+      <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:10 }}>
         <div style={{ fontSize:14,color:C.goldMid }}>Manage your campaign's scenes.</div>
-        <Btn variant="primary" onClick={()=>setEditingScene({id:"",name:"",icon:"🗺️",color:"#0a0a06",particle:"dust",calm:"",tense:"",musicHint:"",ambientHint:""})}>
-          + Add Scene
-        </Btn>
+        <div style={{ display:"flex",gap:8 }}>
+          <Btn variant="ghost" onClick={()=>importRef.current.click()} style={{ fontSize:10 }}>Import ↑</Btn>
+          <Btn variant="ghost" onClick={exportSettings} style={{ fontSize:10 }}>Export ↓</Btn>
+          <Btn variant="primary" onClick={()=>setEditingScene({id:"",name:"",icon:"🗺️",color:"#0a0a06",particle:"dust",calm:"",tense:"",musicHint:"",ambientHint:""})}>
+            + Add Scene
+          </Btn>
+        </div>
       </div>
 
       <div style={{ display:"flex",flexDirection:"column",gap:10 }}>
@@ -676,6 +760,182 @@ function ScenesScreen({ scenes, setScenes, sceneData, setSceneData, activeSceneI
             </Card>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Preset modal ─────────────────────────────────────────────────────────
+function PresetModal({ preset, onSave, onClose }) {
+  const [f, setF] = useState({...preset});
+  const u = (k,v) => setF(p=>({...p,[k]:v}));
+  return (
+    <Modal title="Edit Preset" onClose={onClose} width={380}>
+      <div style={{ display:"flex", gap:12, marginBottom:18 }}>
+        <div>
+          <Label htmlFor="pre-icon">Icon</Label>
+          <TextInput id="pre-icon" value={f.icon} onChange={e=>u("icon",e.target.value)} style={{ width:60,textAlign:"center",fontSize:20,padding:"6px" }}/>
+        </div>
+        <div style={{ flex:1 }}>
+          <Label htmlFor="pre-name">Name</Label>
+          <TextInput id="pre-name" value={f.name} onChange={e=>u("name",e.target.value)} placeholder="Preset name…"/>
+        </div>
+      </div>
+      <div style={{ marginBottom:18 }}>
+        <RangeWithTrack id="pre-tension" label="Tension" value={f.tension} onChange={v=>u("tension",v)}
+          leftLabel="Peaceful" rightLabel="War"
+          trackColor="linear-gradient(to right,#2d6b50,#4a8c6a,#c4742a,#8b2020,#5c0808)"/>
+      </div>
+      <div style={{ marginBottom:24 }}>
+        <RangeWithTrack id="pre-day" label="Time of Day" value={f.dayNight} onChange={v=>u("dayNight",v)}
+          leftLabel="Night" rightLabel="Day"
+          trackColor="linear-gradient(to right,#0a0a1a,#2a1a4a,#6a3820,#d4843a,#f0c060)"/>
+      </div>
+      <div style={{ display:"flex", justifyContent:"flex-end", gap:10 }}>
+        <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+        <Btn variant="primary" onClick={()=>onSave(f)}>Save</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── Encounter timer hook ──────────────────────────────────────────────────
+function useTimer() {
+  const [running, setRunning] = useState(false);
+  const [seconds, setSeconds] = useState(0);
+  const [round, setRound]     = useState(1);
+
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setSeconds(s => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+
+  const mm = String(Math.floor(seconds / 60)).padStart(2,"0");
+  const ss = String(seconds % 60).padStart(2,"0");
+
+  return {
+    running, seconds, round,
+    display: `${mm}:${ss}`,
+    dndRound: Math.floor(seconds / 6) + 1,
+    toggle: () => setRunning(r=>!r),
+    nextRound: () => setRound(r=>r+1),
+    reset: () => { setRunning(false); setSeconds(0); setRound(1); },
+  };
+}
+
+// ─── Session plan screen ───────────────────────────────────────────────────
+function PlanScreen({ scenes, sessionPlan, setSessionPlan, activeSceneId, onSceneClick }) {
+  const activeScene = scenes.find(s=>s.id===activeSceneId)??null;
+  const currentStep = sessionPlan.findIndex(id=>id===activeSceneId);
+
+  function addToplan(sceneId) {
+    setSessionPlan(prev=>[...prev,sceneId]);
+  }
+  function removeStep(idx) {
+    setSessionPlan(prev=>prev.filter((_,i)=>i!==idx));
+  }
+  function moveStep(idx, dir) {
+    setSessionPlan(prev=>{
+      const next=[...prev];
+      const target=idx+dir;
+      if(target<0||target>=next.length) return next;
+      [next[idx],next[target]]=[next[target],next[idx]];
+      return next;
+    });
+  }
+  function goToStep(idx) {
+    const scene=scenes.find(s=>s.id===sessionPlan[idx]);
+    if(scene) onSceneClick(scene);
+  }
+
+  return (
+    <div>
+      {/* Progress bar */}
+      {sessionPlan.length>0&&(
+        <Card style={{ marginBottom:20 }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
+            <div>
+              <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.18em",color:C.gold,textTransform:"uppercase" }}>Session Progress</div>
+              <div style={{ fontSize:13,color:C.goldDim,marginTop:3,fontStyle:"italic" }}>
+                {currentStep>=0 ? `Scene ${currentStep+1} of ${sessionPlan.length}` : `${sessionPlan.length} scenes planned`}
+              </div>
+            </div>
+            <div style={{ display:"flex", gap:8 }}>
+              {currentStep>=0&&currentStep<sessionPlan.length-1&&(
+                <Btn variant="primary" onClick={()=>goToStep(currentStep+1)}>Next Scene →</Btn>
+              )}
+              {currentStep<0&&sessionPlan.length>0&&(
+                <Btn variant="primary" onClick={()=>goToStep(0)}>▶ Begin Session</Btn>
+              )}
+            </div>
+          </div>
+          {/* Progress dots */}
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+            {sessionPlan.map((id,i)=>{
+              const sc=scenes.find(s=>s.id===id);
+              const isDone=currentStep>i;
+              const isCurrent=currentStep===i;
+              return (
+                <div key={i} onClick={()=>goToStep(i)} style={{ display:"flex",alignItems:"center",gap:5,padding:"5px 10px",borderRadius:7,background:isCurrent?"rgba(232,217,160,0.12)":isDone?"rgba(74,140,106,0.12)":"transparent",border:`1px solid ${isCurrent?C.borderFocus:isDone?"rgba(74,140,106,0.3)":C.border}`,cursor:"pointer",transition:"all 0.2s" }}>
+                  <span style={{ fontSize:14 }}>{sc?.icon??"?"}</span>
+                  <span style={{ fontFamily:"Cinzel,serif",fontSize:9,letterSpacing:"0.06em",color:isCurrent?C.gold:isDone?"#4a8c6a":C.goldDim,textTransform:"uppercase" }}>{sc?.name??"Unknown"}</span>
+                  {isDone&&<span style={{ fontSize:10,color:"#4a8c6a" }}>✓</span>}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
+        {/* Plan queue */}
+        <div>
+          <div style={{ fontFamily:"Cinzel,serif",fontSize:10,letterSpacing:"0.18em",color:C.goldDim,textTransform:"uppercase",marginBottom:12 }}>
+            Tonight's Sequence
+          </div>
+          {sessionPlan.length===0?(
+            <Card style={{ textAlign:"center",padding:"32px 20px",color:C.goldDim,fontStyle:"italic",fontSize:14 }}>
+              Add scenes from the list →
+            </Card>
+          ):(
+            <div style={{ display:"flex",flexDirection:"column",gap:8 }}>
+              {sessionPlan.map((id,i)=>{
+                const sc=scenes.find(s=>s.id===id);
+                const isCurrent=currentStep===i;
+                return (
+                  <div key={i} style={{ display:"flex",alignItems:"center",gap:10,background:isCurrent?"rgba(232,217,160,0.08)":C.surface,border:`1px solid ${isCurrent?C.borderFocus:C.border}`,borderRadius:9,padding:"10px 14px",transition:"all 0.2s" }}>
+                    <span style={{ fontSize:11,color:C.goldFaint,fontFamily:"Cinzel,serif",minWidth:18 }}>{i+1}</span>
+                    <span style={{ fontSize:20 }}>{sc?.icon??"?"}</span>
+                    <span style={{ fontFamily:"Cinzel,serif",fontSize:11,color:isCurrent?C.gold:C.goldMid,flex:1,textTransform:"uppercase",letterSpacing:"0.06em" }}>{sc?.name??id}</span>
+                    <div style={{ display:"flex",gap:4 }}>
+                      <button onClick={()=>moveStep(i,-1)} disabled={i===0} style={{ background:"transparent",border:`1px solid ${C.border}`,borderRadius:5,padding:"3px 7px",color:C.goldDim,cursor:i===0?"not-allowed":"pointer",fontSize:12,opacity:i===0?0.3:1 }}>↑</button>
+                      <button onClick={()=>moveStep(i,1)}  disabled={i===sessionPlan.length-1} style={{ background:"transparent",border:`1px solid ${C.border}`,borderRadius:5,padding:"3px 7px",color:C.goldDim,cursor:i===sessionPlan.length-1?"not-allowed":"pointer",fontSize:12,opacity:i===sessionPlan.length-1?0.3:1 }}>↓</button>
+                      <button onClick={()=>removeStep(i)} style={{ background:"transparent",border:`1px solid rgba(180,60,60,0.25)`,borderRadius:5,padding:"3px 7px",color:"rgba(200,80,80,0.8)",cursor:"pointer",fontSize:12 }}>✕</button>
+                    </div>
+                  </div>
+                );
+              })}
+              <Btn variant="ghost" onClick={()=>setSessionPlan([])} style={{ marginTop:4,fontSize:10,color:"rgba(180,80,80,0.7)" }}>Clear All</Btn>
+            </div>
+          )}
+        </div>
+
+        {/* Scene picker */}
+        <div>
+          <div style={{ fontFamily:"Cinzel,serif",fontSize:10,letterSpacing:"0.18em",color:C.goldDim,textTransform:"uppercase",marginBottom:12 }}>
+            Add Scene
+          </div>
+          <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
+            {scenes.map(s=>(
+              <div key={s.id} style={{ display:"flex",alignItems:"center",gap:10,background:C.surface,border:`1px solid ${C.border}`,borderRadius:9,padding:"10px 14px" }}>
+                <span style={{ fontSize:20 }}>{s.icon}</span>
+                <span style={{ fontFamily:"Cinzel,serif",fontSize:11,color:C.goldMid,flex:1,textTransform:"uppercase",letterSpacing:"0.06em" }}>{s.name}</span>
+                <Btn variant="default" onClick={()=>addToplan(s.id)} style={{ fontSize:9,padding:"5px 12px" }}>+ Add</Btn>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -819,6 +1079,8 @@ export default function App() {
   const [sceneData, setSceneData]         = useLocalStorage("andulaak_sceneData", {});
   const [scenes, setScenes]               = useLocalStorage("andulaak_scenes", DEFAULT_SCENES);
   const [soundboard, setSoundboard]       = useLocalStorage("andulaak_soundboard", DEFAULT_SOUNDBOARD);
+  const [presets, setPresets]             = useLocalStorage("andulaak_presets", DEFAULT_PRESETS);
+  const [sessionPlan, setSessionPlan]     = useLocalStorage("andulaak_plan", []);
   const [activeTab, setActiveTab]         = useLocalStorage("andulaak_tab", "stage");
 
   const [isPlaying, setIsPlaying]     = useState(false);
@@ -827,8 +1089,10 @@ export default function App() {
   const [presentationMode, setPresent]= useState(false);
   const [editingScene, setEditScene]  = useState(null);
   const [editingSfxIdx, setEditSfx]   = useState(null);
+  const [editingPreset, setEditPreset]= useState(null);
   const [musicInput, setMusicInput]   = useState("");
   const [ambientInput, setAmbientInput]=useState("");
+  const timer = useTimer();
 
   const musicVolRef   = useRef(musicVol);
   const ambientVolRef = useRef(ambientVol);
@@ -1010,6 +1274,8 @@ export default function App() {
               musicVol={musicVol} ambientVol={ambientVol}
               isPlaying={isPlaying} setIsPlaying={setIsPlaying}
               tensionColor={tensionColor}
+              presets={presets} onEditPreset={setEditPreset}
+              timer={timer}
             />
           )}
           {activeTab==="audio"&&(
@@ -1034,6 +1300,12 @@ export default function App() {
             <NotesScreen
               scenes={scenes} activeSceneId={activeSceneId} setActiveSceneId={setActiveSceneId}
               sceneData={sceneData} setSceneData={setSceneData}
+            />
+          )}
+          {activeTab==="plan"&&(
+            <PlanScreen
+              scenes={scenes} sessionPlan={sessionPlan} setSessionPlan={setSessionPlan}
+              activeSceneId={activeSceneId} onSceneClick={handleSceneClick}
             />
           )}
           {activeTab==="scenes"&&(
@@ -1072,6 +1344,7 @@ export default function App() {
       {/* Modals */}
       {editingScene!==null&&<SceneModal scene={editingScene} onSave={saveScene} onDelete={deleteScene} onClose={()=>setEditScene(null)}/>}
       {editingSfxIdx!==null&&<SfxModal slot={soundboard[editingSfxIdx]} index={editingSfxIdx} onSave={saveSfx} onClose={()=>setEditSfx(null)}/>}
+      {editingPreset!==null&&<PresetModal preset={editingPreset} onSave={p=>{ setPresets(prev=>prev.map(x=>x.id===p.id?p:x)); setEditPreset(null); }} onClose={()=>setEditPreset(null)}/>}
 
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Crimson+Pro:ital,wght@0,300;0,400;1,300&display=swap');
