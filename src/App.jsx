@@ -62,9 +62,9 @@ const EMPTY_SDATA = { musicUrl:"", ambientUrl:"", bgImage:null, notes:"", spotif
 
 // ─── Spotify constants ────────────────────────────────────────────────────
 const SPOTIFY_CLIENT_ID  = "96b844a4f9a141929ee518cac9a33137";
-const SPOTIFY_SCOPE_VER  = "v3"; // bump when scopes change — forces reconnect for existing users
+const SPOTIFY_SCOPE_VER  = "v4"; // bump when scopes change — forces reconnect for existing users
 const SPOTIFY_REDIRECT   = typeof window !== "undefined" ? window.location.origin : "";
-const SPOTIFY_SCOPES     = "streaming user-read-email user-read-private playlist-read-private playlist-read-collaborative user-read-recently-played user-library-read user-library-modify user-modify-playback-state";
+const SPOTIFY_SCOPES     = "streaming user-read-email user-read-private user-read-playback-state user-read-currently-playing playlist-read-private playlist-read-collaborative user-read-recently-played user-library-read user-library-modify user-modify-playback-state";
 
 // ─── Spotify PKCE helpers ─────────────────────────────────────────────────
 async function spVerifier() {
