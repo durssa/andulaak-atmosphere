@@ -287,7 +287,15 @@ function useSpotifyAuth() {
     const v = await spVerifier();
     const c = await spChallenge(v);
     localStorage.setItem("sp_verifier", v);
-    const p = new URLSearchParams({ client_id:SPOTIFY_CLIENT_ID, response_type:"code", redirect_uri:SPOTIFY_REDIRECT, scope:SPOTIFY_SCOPES, code_challenge_method:"S256", code_challenge:c });
+    const p = new URLSearchParams({
+      client_id: SPOTIFY_CLIENT_ID,
+      response_type: "code",
+      redirect_uri: SPOTIFY_REDIRECT,
+      scope: SPOTIFY_SCOPES,
+      code_challenge_method: "S256",
+      code_challenge: c,
+      show_dialog: "true", // Always show permission dialog — prevents cached auth without new scopes
+    });
     window.location.href = `https://accounts.spotify.com/authorize?${p}`;
   }
 
@@ -1041,27 +1049,52 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
   const [searchQuery, setSearchQuery]   = useState("");
   const [searchResults, setSearchResults]=useState(null);
   const [searching, setSearching]       = useState(false);
+  const [searchError, setSearchError]   = useState(null);
   const [myPlaylists, setMyPlaylists]   = useState(null);
+  const [playlistError, setPlaylistError]=useState(null);
   const [recentlyPlayed, setRecentlyPlayed]=useState(null);
-  const [browseTab, setBrowseTab]       = useState("queue"); // queue | search | playlists | recent | url
+  const [recentError, setRecentError]   = useState(null);
+  const [browseTab, setBrowseTab]       = useState("queue");
+
+  // Reset local state when auth changes (e.g. disconnect/reconnect)
+  useEffect(() => {
+    setMyPlaylists(null); setPlaylistError(null);
+    setRecentlyPlayed(null); setRecentError(null);
+    setSearchResults(null); setSearchError(null);
+  }, [auth.isConnected]);
+
+  function apiErrMsg(d) {
+    if (!d?.error) return null;
+    const s = d.error.status;
+    if (s===401||s===403) return "Permission error — disconnect and reconnect Spotify to grant full access.";
+    if (s===502||s===503) return "Spotify server error — please try again in a moment.";
+    return `Spotify error ${s}: ${d.error.message}`;
+  }
 
   async function doSearch() {
     if (!searchQuery.trim()) return;
-    setSearching(true);
+    setSearching(true); setSearchError(null);
     const data = await player.search(searchQuery);
-    setSearchResults(data); setSearching(false);
+    const err = apiErrMsg(data);
+    if (err) { setSearchError(err); setSearchResults(null); }
+    else setSearchResults(data);
+    setSearching(false);
   }
 
   async function loadPlaylists() {
-    if (myPlaylists) return;
+    if (myPlaylists || playlistError) return;
     const d = await player.getMyPlaylists();
-    setMyPlaylists(d);
+    const err = apiErrMsg(d);
+    if (err) setPlaylistError(err);
+    else setMyPlaylists(d);
   }
 
   async function loadRecent() {
-    if (recentlyPlayed) return;
+    if (recentlyPlayed || recentError) return;
     const d = await player.getRecentlyPlayed();
-    setRecentlyPlayed(d);
+    const err = apiErrMsg(d);
+    if (err) setRecentError(err);
+    else setRecentlyPlayed(d);
   }
 
   function switchBrowse(tab) {
@@ -1097,13 +1130,25 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
   return (
     <Card style={{ height:"100%", display:"flex", flexDirection:"column", overflow:"hidden" }}>
       {/* Header */}
-      <div style={{ flexShrink:0, display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10 }}>
+      <div style={{ flexShrink:0, display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8 }}>
         <div style={{ display:"flex",alignItems:"center",gap:8 }}>
           <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.18em",color:C.gold,textTransform:"uppercase" }}>Spotify</div>
           <div style={{ width:7,height:7,borderRadius:"50%",background:"#1db954",boxShadow:"0 0 5px #1db954" }}/>
         </div>
-        <Btn variant="ghost" onClick={auth.logout} style={{ fontSize:9,color:"rgba(180,80,80,0.7)" }}>Disconnect</Btn>
+        <Btn variant="ghost" onClick={auth.logout} style={{ fontSize:9,color:"#f08080", border:"1px solid rgba(180,40,40,0.3)" }}>Disconnect</Btn>
       </div>
+
+      {/* Permission error banner — show prominently when API calls fail */}
+      {(searchError?.includes("Permission")||playlistError?.includes("Permission")||recentError?.includes("Permission"))&&(
+        <div style={{ flexShrink:0, background:"rgba(180,40,40,0.15)", border:"1px solid rgba(180,40,40,0.4)", borderRadius:8, padding:"10px 14px", marginBottom:10, display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:16 }}>⚠️</span>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:12, color:"#f08080", marginBottom:2 }}>Permissions missing</div>
+            <div style={{ fontSize:11, color:C.goldDim }}>Click Disconnect → Connect Spotify again. Spotify will ask you to approve the new permissions.</div>
+          </div>
+          <Btn variant="danger" onClick={auth.logout} style={{ fontSize:9, padding:"6px 12px", flexShrink:0 }}>Disconnect Now</Btn>
+        </div>
+      )}
 
       {/* Now playing */}
       {player.currentTrack ? (
@@ -1222,6 +1267,7 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
               <TextInput value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doSearch()} placeholder="Search tracks, playlists, artists…"/>
               <Btn variant="primary" onClick={doSearch} style={{ whiteSpace:"nowrap",flexShrink:0 }}>{searching?"…":"Search"}</Btn>
             </div>
+            {searchError&&<div style={{ padding:"12px",background:"rgba(180,40,40,0.1)",borderRadius:8,color:"#f08080",fontSize:12 }}>{searchError}</div>}
             {searchResults&&(
               <div style={{ background:C.surfaceHigh,borderRadius:9,overflow:"hidden",flex:1,minHeight:0,overflowY:"auto" }}>
                 {searchResults.tracks?.items?.length>0&&(
@@ -1246,19 +1292,33 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
 
         {/* My Playlists */}
         {browseTab==="playlists"&&(
-          <div style={{ background:C.surfaceHigh,borderRadius:9,flex:1,minHeight:0,overflowY:"auto" }}>
-            {!myPlaylists
-              ? <div style={{ padding:"14px",textAlign:"center",color:C.goldDim,fontSize:13,fontStyle:"italic" }}>Loading…</div>
-              : myPlaylists.items?.map(pl=><SpotifyPlaylistRow key={pl.id} pl={pl} onPlay={playUri}/>)
+          <div style={{ flex:1, minHeight:0, display:"flex", flexDirection:"column", gap:6 }}>
+            {playlistError
+              ? <div style={{ padding:"12px",background:"rgba(180,40,40,0.1)",borderRadius:8,color:"#f08080",fontSize:12 }}>{playlistError}</div>
+              : <div style={{ background:C.surfaceHigh,borderRadius:9,flex:1,minHeight:0,overflowY:"auto" }}>
+                  {!myPlaylists
+                    ? <div style={{ padding:"14px",textAlign:"center",color:C.goldDim,fontSize:13,fontStyle:"italic" }}>Loading…</div>
+                    : myPlaylists.items?.length
+                      ? myPlaylists.items.map(pl=><SpotifyPlaylistRow key={pl.id} pl={pl} onPlay={playUri}/>)
+                      : <div style={{ padding:"14px",textAlign:"center",color:C.goldDim,fontSize:12,fontStyle:"italic" }}>No playlists found</div>
+                  }
+                </div>
             }
           </div>
         )}
 
         {browseTab==="recent"&&(
-          <div style={{ background:C.surfaceHigh,borderRadius:9,flex:1,minHeight:0,overflowY:"auto" }}>
-            {!recentlyPlayed
-              ? <div style={{ padding:"14px",textAlign:"center",color:C.goldDim,fontSize:13,fontStyle:"italic" }}>Loading…</div>
-              : recentlyPlayed.items?.map((item,i)=><SpotifyTrackRow key={i} track={item.track} onPlay={playUri} onQueue={queueUri} showQueue={true}/>)
+          <div style={{ flex:1, minHeight:0, display:"flex", flexDirection:"column", gap:6 }}>
+            {recentError
+              ? <div style={{ padding:"12px",background:"rgba(180,40,40,0.1)",borderRadius:8,color:"#f08080",fontSize:12 }}>{recentError}</div>
+              : <div style={{ background:C.surfaceHigh,borderRadius:9,flex:1,minHeight:0,overflowY:"auto" }}>
+                  {!recentlyPlayed
+                    ? <div style={{ padding:"14px",textAlign:"center",color:C.goldDim,fontSize:13,fontStyle:"italic" }}>Loading…</div>
+                    : recentlyPlayed.items?.length
+                      ? recentlyPlayed.items.map((item,i)=><SpotifyTrackRow key={i} track={item.track} onPlay={playUri} onQueue={queueUri} showQueue={true}/>)
+                      : <div style={{ padding:"14px",textAlign:"center",color:C.goldDim,fontSize:12,fontStyle:"italic" }}>No recent tracks</div>
+                  }
+                </div>
             }
           </div>
         )}
