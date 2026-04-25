@@ -297,7 +297,7 @@ function useSpotifyAuth() {
 }
 
 // ─── Spotify player hook ──────────────────────────────────────────────────
-function useSpotifyPlayer(token) {
+function useSpotifyPlayer(token, initialVolume=70) {
   const [ready, setReady]               = useState(false);
   const [currentTrack, setCurrentTrack] = useState(null);
   const [nextTracks, setNextTracks]     = useState([]);
@@ -324,13 +324,15 @@ function useSpotifyPlayer(token) {
       player.addListener("ready", ({ device_id }) => {
         deviceIdRef.current = device_id;
         setReady(true);
-        // Fetch initial queue as soon as player is ready
+        // Apply stored volume immediately so the slider matches what you hear
+        player.setVolume(initialVolume / 100);
+        // Fetch initial queue (small delay for SDK to settle)
         setTimeout(() => {
           if (!tokenRef.current) return;
           fetch("https://api.spotify.com/v1/me/player/queue", {
             headers:{ Authorization:`Bearer ${tokenRef.current}` }
           }).then(r=>r.ok?r.json():null).then(d=>{ if(d?.queue) setNextTracks(d.queue.slice(0,10)); }).catch(()=>{});
-        }, 1500);
+        }, 2000);
       });
       player.addListener("not_ready", () => setReady(false));
       player.addListener("player_state_changed", s => {
@@ -387,6 +389,17 @@ function useSpotifyPlayer(token) {
   }
   async function skipNext()  { await spApi("/me/player/next"); }
   async function skipPrev()  { await spApi("/me/player/previous"); }
+  // Auto-refresh queue 2.5s after track changes (Spotify needs time to build it)
+  useEffect(() => {
+    if (!currentTrack?.id || !tokenRef.current) return;
+    const id = setTimeout(() => {
+      fetch("https://api.spotify.com/v1/me/player/queue", {
+        headers:{ Authorization:`Bearer ${tokenRef.current}` }
+      }).then(r=>r.ok?r.json():null).then(d=>{ if(d?.queue) setNextTracks(d.queue.slice(0,10)); }).catch(()=>{});
+    }, 2500);
+    return () => clearTimeout(id);
+  }, [currentTrack?.id]);
+
   // Poll position every second while playing
   useEffect(() => {
     if (isPaused || !playerRef.current) return;
@@ -861,23 +874,41 @@ function YouTubeTrackPanel({ label, input, setInput, onLoad, onClear, hasId, con
 
 function CompactYTPanel({ label, input, setInput, onLoad, onClear, hasId, containerId, hint }) {
   return (
-    <Card style={{ padding:"10px 12px" }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-        <div style={{ fontFamily:"Cinzel,serif", fontSize:9, letterSpacing:"0.15em", color:C.gold, textTransform:"uppercase" }}>{label}</div>
-        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-          <button onClick={()=>window.open(`https://www.youtube.com/results?search_query=${encodeURIComponent(hint)}`,"_blank","noopener")}
-            style={{ fontSize:9, color:C.goldDim, background:"transparent", border:`1px solid ${C.border}`, borderRadius:5, cursor:"pointer", padding:"3px 7px", outline:"none" }}>
-            🔎 Search YouTube
-          </button>
-          {hasId && <button onClick={onClear} style={{ fontSize:9, color:"rgba(180,80,80,0.7)", background:"transparent", border:`1px solid rgba(180,80,80,0.2)`, borderRadius:5, cursor:"pointer", padding:"3px 7px", outline:"none" }}>✕ Clear</button>}
+    <Card style={{ padding:"12px 14px", display:"flex", flexDirection:"column", gap:8 }}>
+      {/* Header row */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <div style={{ fontFamily:"Cinzel,serif", fontSize:10, letterSpacing:"0.15em", color:C.gold, textTransform:"uppercase" }}>{label}</div>
+          {hasId && <div style={{ width:7,height:7,borderRadius:"50%",background:"#e53",boxShadow:"0 0 5px rgba(220,80,40,0.8)", animation:"pulse 2s ease-in-out infinite", flexShrink:0 }}/>}
+          {hasId && <div style={{ fontSize:9,color:C.goldDim,fontStyle:"italic" }}>Playing · looping</div>}
         </div>
+        {hasId && <button onClick={onClear} style={{ fontSize:9, color:"#f08080", background:"rgba(180,40,40,0.12)", border:`1px solid rgba(180,40,40,0.3)`, borderRadius:6, cursor:"pointer", padding:"4px 10px", outline:"none", fontFamily:"Cinzel,serif", letterSpacing:"0.06em" }}>✕ Stop</button>}
       </div>
-      <div style={{ display:"flex", gap:6 }}>
-        <TextInput value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&onLoad()} placeholder="YouTube URL or video ID…"/>
-        <Btn variant="primary" onClick={onLoad} style={{ whiteSpace:"nowrap", flexShrink:0, padding:"7px 12px", fontSize:9 }}>Load</Btn>
+
+      {/* YouTube player (embedded, always visible when loaded) */}
+      <div style={{ borderRadius:8, overflow:"hidden", height:hasId?72:0, transition:"height 0.3s ease", background:hasId?C.surfaceHigh:"transparent" }}>
+        <div id={containerId} style={{ width:"100%", height:"100%" }}/>
       </div>
-      {hasId && <div style={{ marginTop:6, borderRadius:6, overflow:"hidden", height:65 }}><div id={containerId} style={{ width:"100%", height:"100%" }}/></div>}
+      {/* Hidden container when no video loaded (preserves the ID in DOM for the hook) */}
       {!hasId && <div id={containerId} style={{ display:"none" }}/>}
+
+      {/* URL input row */}
+      <div style={{ display:"flex", gap:6 }}>
+        <TextInput value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&onLoad()} placeholder={hasId?"Change YouTube URL…":"Paste YouTube URL or video ID…"} style={{ fontSize:12 }}/>
+        <Btn variant="primary" onClick={onLoad} style={{ whiteSpace:"nowrap", flexShrink:0, padding:"7px 14px", fontSize:10 }}>{hasId?"Swap":"Load"}</Btn>
+      </div>
+
+      {/* Search hint */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+        <div style={{ fontSize:10, color:C.goldDim, fontStyle:"italic", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1 }}>
+          Hint: {hint}
+        </div>
+        <button
+          onClick={()=>window.open(`https://www.youtube.com/results?search_query=${encodeURIComponent(hint)}`,"_blank","noopener")}
+          style={{ fontSize:9, color:C.goldMid, background:C.surfaceHigh, border:`1px solid ${C.border}`, borderRadius:6, cursor:"pointer", padding:"4px 10px", outline:"none", whiteSpace:"nowrap", marginLeft:8, flexShrink:0 }}>
+          🔎 Search →
+        </button>
+      </div>
     </Card>
   );
 }
@@ -1012,7 +1043,7 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
   const [searching, setSearching]       = useState(false);
   const [myPlaylists, setMyPlaylists]   = useState(null);
   const [recentlyPlayed, setRecentlyPlayed]=useState(null);
-  const [browseTab, setBrowseTab]       = useState("search"); // search | playlists | recent
+  const [browseTab, setBrowseTab]       = useState("queue"); // queue | search | playlists | recent | url
 
   async function doSearch() {
     if (!searchQuery.trim()) return;
@@ -1143,45 +1174,46 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
       )}
 
       {/* Volume */}
-      <div style={{ marginBottom:16 }}>
+      <div style={{ marginBottom:10, flexShrink:0 }}>
         <RangeWithTrack id="spvol" label="Volume" value={spotifyVol} onChange={v=>{ setSpotifyVol(v); player.setVol(v); }} leftLabel="0" rightLabel="100"/>
       </div>
 
-      {/* Up Next queue — always shown when connected */}
-      <div style={{ marginBottom:10, flexShrink:0 }}>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
-          <div style={{ fontSize:10,fontFamily:"Cinzel,serif",letterSpacing:"0.12em",color:C.goldDim,textTransform:"uppercase" }}>
-            Up Next {player.nextTracks?.length>0 ? `— ${player.nextTracks.length} tracks` : ""}
-          </div>
-          <button onClick={player.refreshQueue}
-            style={{ fontSize:9,color:C.goldFaint,background:"transparent",border:`1px solid ${C.border}`,borderRadius:5,cursor:"pointer",padding:"3px 8px",outline:"none",fontFamily:"Cinzel,serif",letterSpacing:"0.06em" }}>
-            ↻ Refresh
-          </button>
-        </div>
-        <div style={{ background:C.surfaceHigh,borderRadius:9,overflow:"hidden",maxHeight:160,overflowY:"auto" }}>
-          {!player.nextTracks?.length ? (
-            <div style={{ padding:"12px 14px",textAlign:"center",color:C.goldFaint,fontSize:12,fontStyle:"italic" }}>
-              No queue · Start a playlist or album, then click Refresh
-            </div>
-          ) : (
-            player.nextTracks.map((t,i)=>(
-              <SpotifyTrackRow key={i} track={t} onPlay={playUri} onQueue={queueUri} showQueue={true}/>
-            ))
-          )}
-        </div>
-      </div>
-
-      {/* Browse tabs */}
-      {/* Browse — flex:1 so it fills remaining card height, results scroll inside */}
-      <div style={{ flex:1, minHeight:0, borderTop:`1px solid ${C.border}`,paddingTop:12,marginTop:4, display:"flex", flexDirection:"column", overflow:"hidden" }}>
-        <div style={{ display:"flex",gap:6,marginBottom:12 }}>
-          {[["search","🔍 Search"],["playlists","📚 Your Playlists"],["recent","🕐 Recently Played"],["url","🔗 Paste URL"]].map(([id,label])=>(
+      {/* Browse tabs — Queue is the first/default tab so it's always visible */}
+      <div style={{ flex:1, minHeight:0, borderTop:`1px solid ${C.border}`,paddingTop:10,marginTop:4, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+        <div style={{ display:"flex",gap:5,marginBottom:10,flexShrink:0,flexWrap:"wrap" }}>
+          {[["queue",`🎶 Queue${player.nextTracks?.length>0?` (${player.nextTracks.length})`:"" }`],["search","🔍 Search"],["playlists","📚 Playlists"],["recent","🕐 Recent"],["url","🔗 URL"]].map(([id,label])=>(
             <button key={id} onClick={()=>switchBrowse(id)}
               style={{ fontFamily:"Cinzel,serif",fontSize:9,letterSpacing:"0.08em",textTransform:"uppercase",background:browseTab===id?"rgba(232,217,160,0.1)":"transparent",border:`1px solid ${browseTab===id?C.borderFocus:C.border}`,borderRadius:7,color:browseTab===id?C.gold:C.goldDim,cursor:"pointer",padding:"7px 10px",outline:"none",transition:"all 0.2s",flexShrink:0 }}>
               {label}
             </button>
           ))}
         </div>
+
+        {/* Queue */}
+        {browseTab==="queue"&&(
+          <div style={{ flex:1, minHeight:0, display:"flex", flexDirection:"column", gap:8 }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
+              <div style={{ fontSize:11,color:C.goldMid }}>
+                {player.nextTracks?.length>0 ? `${player.nextTracks.length} tracks coming up` : "Queue is empty right now"}
+              </div>
+              <button onClick={player.refreshQueue}
+                style={{ fontSize:10,color:C.goldMid,background:C.surfaceHigh,border:`1px solid ${C.border}`,borderRadius:6,cursor:"pointer",padding:"5px 12px",outline:"none",fontFamily:"Cinzel,serif",letterSpacing:"0.06em" }}>
+                ↻ Refresh Queue
+              </button>
+            </div>
+            <div style={{ flex:1, minHeight:0, background:C.surfaceHigh, borderRadius:9, overflow:"hidden", overflowY:"auto" }}>
+              {!player.nextTracks?.length ? (
+                <div style={{ padding:"20px",textAlign:"center",color:C.goldDim,fontSize:13,fontStyle:"italic",lineHeight:1.7 }}>
+                  Start a playlist or album on Spotify,<br/>then click ↻ Refresh Queue above.
+                </div>
+              ) : (
+                player.nextTracks.map((t,i)=>(
+                  <SpotifyTrackRow key={i} track={t} onPlay={playUri} onQueue={queueUri} showQueue={true}/>
+                ))
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Search */}
         {browseTab==="search"&&(
@@ -1775,7 +1807,7 @@ export default function App() {
   const [ambientReloadKey, setAmbientReloadKey]=useState(0);
   const timer        = useTimer();
   const spotifyAuth  = useSpotifyAuth();
-  const spotifyPlayer= useSpotifyPlayer(spotifyAuth.token);
+  const spotifyPlayer= useSpotifyPlayer(spotifyAuth.token, spotifyVol);
 
   const musicVolRef   = useRef(musicVol);
   const ambientVolRef = useRef(ambientVol);
@@ -1919,15 +1951,11 @@ export default function App() {
       {activeScene&&<ParticleLayer type={activeScene.particle} tension={tension}/>}
       <InkBleed active={inkActive} onDone={handleInkDone}/>
 
-      {/* Hidden persistent YT containers */}
+      {/* SFX main player — always in DOM, hidden until triggered */}
       <div style={{ display:"none" }}>
         <div id="sfx-player-main"/>
       </div>
-      {/* Hidden players for scenes with no active audio panel shown */}
-      <div style={{ display:"none" }}>
-        <div id="music-player"/>
-        <div id="ambient-player"/>
-      </div>
+      {/* music-player and ambient-player are rendered by CompactYTPanel in the Audio tab */}
 
       {/* ─── Main UI — fixed height flex column ──────────────────── */}
       <div style={{
