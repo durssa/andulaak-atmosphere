@@ -146,7 +146,7 @@ function useYouTubeAPI() {
   return ready;
 }
 
-function useYTPlayer(containerId, videoId, volume, isPlaying) {
+function useYTPlayer(containerId, videoId, volume, isPlaying, reloadKey) {
   const ref = useRef(null);
   const ytReady = useYouTubeAPI();
   const volRef = useRef(volume), playRef = useRef(isPlaying);
@@ -166,12 +166,13 @@ function useYTPlayer(containerId, videoId, volume, isPlaying) {
       videoId, height:"70", width:"100%",
       playerVars: { autoplay:1, loop:1, playlist:videoId, controls:0, modestbranding:1 },
       events: { onReady(e) {
-        if (playRef.current) { e.target.mute(); e.target.playVideo(); setTimeout(() => { e.target.unMute(); e.target.setVolume(volRef.current); }, 250); }
-        else e.target.setVolume(volRef.current);
+        // Always start playing when explicitly loaded — mute trick for autoplay policy
+        e.target.mute(); e.target.playVideo();
+        setTimeout(() => { e.target.unMute(); e.target.setVolume(volRef.current); }, 250);
       }},
     });
     return () => { ref.current?.destroy(); ref.current = null; if (wrapper) wrapper.innerHTML = ""; };
-  }, [ytReady, videoId, containerId]);
+  }, [ytReady, videoId, containerId, reloadKey]); // reloadKey forces restart even if URL unchanged
 
   useEffect(() => { try { ref.current?.setVolume(volume); } catch {} }, [volume]);
   useEffect(() => { try { if (isPlaying) ref.current?.playVideo(); else ref.current?.pauseVideo(); } catch {} }, [isPlaying]);
@@ -265,6 +266,8 @@ function useSpotifyAuth() {
 function useSpotifyPlayer(token) {
   const [ready, setReady]               = useState(false);
   const [currentTrack, setCurrentTrack] = useState(null);
+  const [isPaused, setIsPaused]         = useState(true);
+  const [shuffle, setShuffle]           = useState(false);
   const playerRef   = useRef(null);
   const deviceIdRef = useRef(null);
   const tokenRef    = useRef(token);
@@ -272,7 +275,6 @@ function useSpotifyPlayer(token) {
 
   useEffect(() => {
     if (!token) return;
-
     function initPlayer() {
       if (playerRef.current) return;
       const player = new window.Spotify.Player({
@@ -283,15 +285,16 @@ function useSpotifyPlayer(token) {
       player.addListener("ready", ({ device_id }) => { deviceIdRef.current = device_id; setReady(true); });
       player.addListener("not_ready", () => setReady(false));
       player.addListener("player_state_changed", s => {
-        if (s?.track_window?.current_track) setCurrentTrack(s.track_window.current_track);
+        if (!s) return;
+        setIsPaused(s.paused);
+        setShuffle(s.shuffle);
+        if (s.track_window?.current_track) setCurrentTrack(s.track_window.current_track);
       });
       player.connect();
       playerRef.current = player;
     }
-
-    if (window.Spotify?.Player) {
-      initPlayer();
-    } else {
+    if (window.Spotify?.Player) initPlayer();
+    else {
       window.onSpotifyWebPlaybackSDKReady = initPlayer;
       if (!document.querySelector('script[src*="spotify-player"]')) {
         const tag = document.createElement("script");
@@ -299,27 +302,48 @@ function useSpotifyPlayer(token) {
         document.head.appendChild(tag);
       }
     }
-
     return () => { playerRef.current?.disconnect(); playerRef.current = null; setReady(false); };
   }, [token]);
+
+  function spApi(path, method="POST", body) {
+    return fetch(`https://api.spotify.com/v1${path}`, {
+      method,
+      headers: { Authorization:`Bearer ${tokenRef.current}`, "Content-Type":"application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  }
 
   async function play(uri) {
     if (!deviceIdRef.current) return;
     const parsed = parseSpotifyUrl(uri);
     if (!parsed) return;
-    const isTrack = parsed.type === "track";
-    await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceIdRef.current}`, {
-      method:"PUT",
-      headers:{ Authorization:`Bearer ${tokenRef.current}`, "Content-Type":"application/json" },
-      body: JSON.stringify(isTrack ? { uris:[parsed.uri] } : { context_uri:parsed.uri }),
+    await spApi(`/me/player/play?device_id=${deviceIdRef.current}`, "PUT",
+      parsed.type === "track" ? { uris:[parsed.uri] } : { context_uri:parsed.uri });
+  }
+  async function search(query) {
+    if (!query.trim()) return null;
+    const r = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track,playlist&limit=5`, {
+      headers:{ Authorization:`Bearer ${tokenRef.current}` }
     });
+    return r.json();
+  }
+  async function skipNext()  { await spApi("/me/player/next"); }
+  async function skipPrev()  { await spApi("/me/player/previous"); }
+  async function toggleShuffle() {
+    const next = !shuffle;
+    setShuffle(next);
+    await spApi(`/me/player/shuffle?state=${next}`, "PUT");
   }
 
-  function pause()        { playerRef.current?.pause(); }
-  function resume()       { playerRef.current?.resume(); }
-  function setVol(v)      { playerRef.current?.setVolume(v / 100); }
+  function pause()   { playerRef.current?.pause(); }
+  function resume()  { playerRef.current?.resume(); }
+  function setVol(v) { playerRef.current?.setVolume(v / 100); }
 
-  return { ready, currentTrack, play, pause, resume, setVol };
+  const albumArt   = currentTrack?.album?.images?.[0]?.url;
+  const artistName = currentTrack?.artists?.[0]?.name;
+  const albumName  = currentTrack?.album?.name;
+
+  return { ready, currentTrack, isPaused, shuffle, albumArt, artistName, albumName, play, pause, resume, setVol, skipNext, skipPrev, toggleShuffle, search };
 }
 
 async function compressImage(file) {
@@ -773,62 +797,179 @@ function AudioScreen({ activeScene, sceneData, musicId, ambientId, musicVol, set
       </Card>
 
       {/* ── Spotify ── */}
-      <Card style={{ marginTop:14 }}>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
-          <div>
-            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-              <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.18em",color:C.gold,textTransform:"uppercase" }}>Spotify</div>
-              {spotifyPlayer.ready&&<div style={{ width:7,height:7,borderRadius:"50%",background:"#1db954",boxShadow:"0 0 6px #1db954" }}/>}
-            </div>
-            {spotifyPlayer.currentTrack&&(
-              <div style={{ fontSize:12,color:C.goldDim,fontStyle:"italic",marginTop:3 }}>
-                ♪ {spotifyPlayer.currentTrack.name} — {spotifyPlayer.currentTrack.artists?.[0]?.name}
-              </div>
-            )}
+      <SpotifyPanel
+        auth={spotifyAuth} player={spotifyPlayer}
+        spotifyVol={spotifyVol} setSpotifyVol={setSpotifyVol}
+        spotifyInput={spotifyInput} setSpotifyInput={setSpotifyInput}
+        onLoadSpotify={onLoadSpotify}
+      />
+    </div>
+  );
+}
+
+function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, setSpotifyInput, onLoadSpotify }) {
+  const [searchQuery, setSearchQuery]   = useState("");
+  const [searchResults, setSearchResults]=useState(null);
+  const [searching, setSearching]       = useState(false);
+
+  async function doSearch() {
+    if (!searchQuery.trim()) return;
+    setSearching(true);
+    const data = await player.search(searchQuery);
+    setSearchResults(data);
+    setSearching(false);
+  }
+
+  function playResult(uri, name) {
+    player.play(uri);
+    setSearchResults(null);
+    setSearchQuery("");
+    setSpotifyInput(uri);
+  }
+
+  return (
+    <Card style={{ marginTop:14 }}>
+      {/* Header */}
+      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16 }}>
+        <div style={{ display:"flex",alignItems:"center",gap:10 }}>
+          <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.18em",color:C.gold,textTransform:"uppercase" }}>Spotify</div>
+          {player.ready&&<div style={{ width:7,height:7,borderRadius:"50%",background:"#1db954",boxShadow:"0 0 6px #1db954",flexShrink:0 }}/>}
+        </div>
+        {auth.isConnected&&<Btn variant="ghost" onClick={auth.logout} style={{ fontSize:9,color:"rgba(180,80,80,0.7)" }}>Disconnect</Btn>}
+      </div>
+
+      {/* Not connected */}
+      {!auth.isConnected ? (
+        <div style={{ textAlign:"center",padding:"24px 16px" }}>
+          <div style={{ fontSize:32,marginBottom:12 }}>🎵</div>
+          <div style={{ fontSize:14,color:C.goldDim,marginBottom:6,fontFamily:"Cinzel,serif",letterSpacing:"0.08em" }}>Connect Spotify Premium</div>
+          <div style={{ fontSize:13,color:C.goldFaint,marginBottom:20,lineHeight:1.65 }}>
+            Play any track, playlist, or album from your Spotify library — search by name or paste a URL. Full volume control included.
           </div>
-          {spotifyAuth.isConnected&&(
-            <Btn variant="ghost" onClick={spotifyAuth.logout} style={{ fontSize:9,color:"rgba(180,80,80,0.7)" }}>Disconnect</Btn>
-          )}
+          <Btn variant="primary" onClick={auth.login} style={{ fontSize:11,padding:"11px 24px" }}>
+            {auth.loading ? "Connecting…" : "Connect Spotify →"}
+          </Btn>
         </div>
 
-        {!spotifyAuth.isConnected ? (
-          <div style={{ textAlign:"center",padding:"20px 16px" }}>
-            <div style={{ fontSize:13,color:C.goldDim,marginBottom:16,lineHeight:1.6 }}>
-              Connect your Spotify Premium account to play any track, playlist, or album directly in the app — with full volume control.
-            </div>
-            <Btn variant="primary" onClick={spotifyAuth.login} style={{ fontSize:11 }}>
-              {spotifyAuth.loading ? "Connecting…" : "Connect Spotify →"}
-            </Btn>
-          </div>
-        ) : !spotifyPlayer.ready ? (
-          <div style={{ textAlign:"center",padding:"14px",color:C.goldDim,fontSize:13,fontStyle:"italic" }}>
-            Initialising Spotify player…
-          </div>
-        ) : (
-          <>
-            <div style={{ display:"flex",gap:8,marginBottom:8 }}>
-              <TextInput
-                value={spotifyInput}
-                onChange={e=>setSpotifyInput(e.target.value)}
-                onKeyDown={e=>e.key==="Enter"&&onLoadSpotify()}
-                placeholder="Spotify playlist, album, or track URL…"
-              />
-              <Btn variant="primary" onClick={onLoadSpotify} style={{ whiteSpace:"nowrap",flexShrink:0 }}>Play</Btn>
-            </div>
-            <div style={{ fontSize:11,color:C.goldFaint,fontStyle:"italic",marginBottom:14 }}>
-              Paste any open.spotify.com URL — track, playlist, or album
-            </div>
-            <div style={{ display:"flex",gap:12,alignItems:"center" }}>
-              <RangeWithTrack id="spvol" label="Volume" value={spotifyVol} onChange={v=>{ setSpotifyVol(v); spotifyPlayer.setVol(v); }}/>
-              <div style={{ display:"flex",gap:8,flexShrink:0 }}>
-                <Btn variant="default" onClick={spotifyPlayer.resume} style={{ fontSize:13,padding:"8px 12px" }}>▶</Btn>
-                <Btn variant="default" onClick={spotifyPlayer.pause}  style={{ fontSize:13,padding:"8px 12px" }}>⏸</Btn>
+      /* Initialising */ ) : !player.ready ? (
+        <div style={{ textAlign:"center",padding:"20px",color:C.goldDim,fontSize:13,fontStyle:"italic" }}>
+          Initialising Spotify player…
+        </div>
+
+      /* Ready */ ) : (
+        <>
+          {/* Now playing */}
+          {player.currentTrack && (
+            <div style={{ display:"flex",alignItems:"center",gap:14,background:C.surfaceHigh,borderRadius:9,padding:"12px 14px",marginBottom:16 }}>
+              {player.albumArt && (
+                <img src={player.albumArt} alt="Album art"
+                  style={{ width:60,height:60,borderRadius:6,flexShrink:0,objectFit:"cover" }}/>
+              )}
+              <div style={{ flex:1,minWidth:0 }}>
+                <div style={{ fontSize:14,color:C.gold,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis" }}>
+                  {player.currentTrack.name}
+                </div>
+                <div style={{ fontSize:12,color:C.goldDim,marginTop:2 }}>
+                  {player.artistName} · {player.albumName}
+                </div>
               </div>
             </div>
-          </>
-        )}
-      </Card>
-    </div>
+          )}
+
+          {/* Transport */}
+          <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:16 }}>
+            <button onClick={player.skipPrev} aria-label="Previous" style={{ background:"transparent",border:"none",color:C.goldDim,fontSize:20,cursor:"pointer",padding:"6px 10px",outline:"none" }}>⏮</button>
+            <button
+              onClick={player.isPaused ? player.resume : player.pause}
+              aria-label={player.isPaused?"Play":"Pause"}
+              style={{ background:"rgba(29,185,84,0.15)",border:"1px solid rgba(29,185,84,0.4)",borderRadius:"50%",width:44,height:44,color:"#1db954",fontSize:18,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",outline:"none",flexShrink:0 }}>
+              {player.isPaused ? "▶" : "⏸"}
+            </button>
+            <button onClick={player.skipNext} aria-label="Next" style={{ background:"transparent",border:"none",color:C.goldDim,fontSize:20,cursor:"pointer",padding:"6px 10px",outline:"none" }}>⏭</button>
+            <button
+              onClick={player.toggleShuffle}
+              aria-label="Toggle shuffle" aria-pressed={player.shuffle}
+              style={{ background:"transparent",border:"none",color:player.shuffle?"#1db954":C.goldFaint,fontSize:18,cursor:"pointer",padding:"6px 10px",outline:"none",marginLeft:"auto" }}
+              title="Shuffle">🔀</button>
+          </div>
+
+          {/* Volume */}
+          <div style={{ marginBottom:16 }}>
+            <RangeWithTrack id="spvol" label="Volume" value={spotifyVol} onChange={v=>{ setSpotifyVol(v); player.setVol(v); }} leftLabel="0" rightLabel="100"/>
+          </div>
+
+          {/* Search */}
+          <div style={{ marginBottom:12 }}>
+            <Label>Search Spotify</Label>
+            <div style={{ display:"flex",gap:8 }}>
+              <TextInput
+                value={searchQuery}
+                onChange={e=>setSearchQuery(e.target.value)}
+                onKeyDown={e=>e.key==="Enter"&&doSearch()}
+                placeholder="Search tracks, playlists, albums…"
+              />
+              <Btn variant="primary" onClick={doSearch} style={{ whiteSpace:"nowrap",flexShrink:0 }}>
+                {searching ? "…" : "Search"}
+              </Btn>
+            </div>
+          </div>
+
+          {/* Search results */}
+          {searchResults && (
+            <div style={{ background:C.surfaceHigh,borderRadius:9,overflow:"hidden",marginBottom:12 }}>
+              {searchResults.tracks?.items?.length>0 && (
+                <>
+                  <div style={{ padding:"8px 14px",fontSize:9,fontFamily:"Cinzel,serif",letterSpacing:"0.12em",color:C.goldFaint,textTransform:"uppercase",borderBottom:`1px solid ${C.border}` }}>Tracks</div>
+                  {searchResults.tracks.items.map(t=>(
+                    <div key={t.id} onClick={()=>playResult(t.uri,t.name)}
+                      style={{ display:"flex",alignItems:"center",gap:12,padding:"10px 14px",cursor:"pointer",borderBottom:`1px solid ${C.border}`,transition:"background 0.15s" }}
+                      onMouseEnter={e=>e.currentTarget.style.background="rgba(232,217,160,0.05)"}
+                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                      {t.album?.images?.[2]?.url&&<img src={t.album.images[2].url} alt="" style={{ width:36,height:36,borderRadius:4,flexShrink:0 }}/>}
+                      <div style={{ flex:1,minWidth:0 }}>
+                        <div style={{ fontSize:13,color:C.gold,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis" }}>{t.name}</div>
+                        <div style={{ fontSize:11,color:C.goldDim }}>{t.artists?.[0]?.name}</div>
+                      </div>
+                      <span style={{ fontSize:11,color:C.goldFaint,flexShrink:0 }}>▶</span>
+                    </div>
+                  ))}
+                </>
+              )}
+              {searchResults.playlists?.items?.length>0 && (
+                <>
+                  <div style={{ padding:"8px 14px",fontSize:9,fontFamily:"Cinzel,serif",letterSpacing:"0.12em",color:C.goldFaint,textTransform:"uppercase",borderBottom:`1px solid ${C.border}` }}>Playlists</div>
+                  {searchResults.playlists.items.filter(Boolean).map(pl=>(
+                    <div key={pl.id} onClick={()=>playResult(pl.uri,pl.name)}
+                      style={{ display:"flex",alignItems:"center",gap:12,padding:"10px 14px",cursor:"pointer",borderBottom:`1px solid ${C.border}`,transition:"background 0.15s" }}
+                      onMouseEnter={e=>e.currentTarget.style.background="rgba(232,217,160,0.05)"}
+                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                      {pl.images?.[0]?.url&&<img src={pl.images[0].url} alt="" style={{ width:36,height:36,borderRadius:4,flexShrink:0 }}/>}
+                      <div style={{ flex:1,minWidth:0 }}>
+                        <div style={{ fontSize:13,color:C.gold,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis" }}>{pl.name}</div>
+                        <div style={{ fontSize:11,color:C.goldDim }}>{pl.tracks?.total} tracks</div>
+                      </div>
+                      <span style={{ fontSize:11,color:C.goldFaint,flexShrink:0 }}>▶</span>
+                    </div>
+                  ))}
+                </>
+              )}
+              <div style={{ padding:"8px 14px",textAlign:"right" }}>
+                <Btn variant="ghost" onClick={()=>setSearchResults(null)} style={{ fontSize:10 }}>Close</Btn>
+              </div>
+            </div>
+          )}
+
+          {/* URL paste fallback */}
+          <div style={{ borderTop:`1px solid ${C.border}`,paddingTop:12,marginTop:4 }}>
+            <Label>Or paste a Spotify URL</Label>
+            <div style={{ display:"flex",gap:8 }}>
+              <TextInput value={spotifyInput} onChange={e=>setSpotifyInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&onLoadSpotify()} placeholder="open.spotify.com/playlist/…"/>
+              <Btn variant="default" onClick={onLoadSpotify} style={{ whiteSpace:"nowrap",flexShrink:0 }}>Play</Btn>
+            </div>
+          </div>
+        </>
+      )}
+    </Card>
   );
 }
 
@@ -1311,6 +1452,8 @@ export default function App() {
   const [musicInput, setMusicInput]   = useState("");
   const [ambientInput, setAmbientInput]=useState("");
   const [spotifyInput, setSpotifyInput]=useState("");
+  const [musicReloadKey, setMusicReloadKey]   = useState(0);
+  const [ambientReloadKey, setAmbientReloadKey]=useState(0);
   const timer        = useTimer();
   const spotifyAuth  = useSpotifyAuth();
   const spotifyPlayer= useSpotifyPlayer(spotifyAuth.token);
@@ -1330,8 +1473,8 @@ export default function App() {
   const t            = tension/100;
   const tensionColor = getTensionColor(tension);
 
-  const setMusicDirect   = useYTPlayer("music-player",   musicId,   musicVol,   isPlaying);
-  const setAmbientDirect = useYTPlayer("ambient-player", ambientId, ambientVol, isPlaying);
+  const setMusicDirect   = useYTPlayer("music-player",   musicId,   musicVol,   isPlaying, musicReloadKey);
+  const setAmbientDirect = useYTPlayer("ambient-player", ambientId, ambientVol, isPlaying, ambientReloadKey);
   const triggerSfx       = useSfxPlayer("sfx-player-main");
 
   useEffect(()=>{ if(activeScene) document.body.style.background=activeScene.color; },[]); // eslint-disable-line
@@ -1521,8 +1664,8 @@ export default function App() {
               sfxVol={sfxVol} setSfxVol={setSfxVol}
               spotifyVol={spotifyVol} setSpotifyVol={setSpotifyVol}
               isPlaying={isPlaying} soundboard={soundboard} setSoundboard={setSoundboard}
-              onLoadMusic={()=>{ updateSceneUrl("musicUrl",musicInput); setIsPlaying(true); }}
-              onLoadAmbient={()=>{ updateSceneUrl("ambientUrl",ambientInput); setIsPlaying(true); }}
+              onLoadMusic={()=>{ updateSceneUrl("musicUrl",musicInput); setIsPlaying(true); setMusicReloadKey(k=>k+1); }}
+              onLoadAmbient={()=>{ updateSceneUrl("ambientUrl",ambientInput); setIsPlaying(true); setAmbientReloadKey(k=>k+1); }}
               onClearMusic={()=>{ updateSceneUrl("musicUrl",""); setMusicInput(""); }}
               onClearAmbient={()=>{ updateSceneUrl("ambientUrl",""); setAmbientInput(""); }}
               musicInput={musicInput} setMusicInput={setMusicInput}
