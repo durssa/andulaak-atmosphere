@@ -95,8 +95,12 @@ function getYouTubeId(input) {
   try {
     const url = new URL(input);
     const v = url.searchParams.get("v") || url.pathname.split("/").pop();
-    return v && v.length > 3 ? v : null;
-  } catch { const id = input.trim(); return id.length > 3 ? id : null; }
+    return v && /^[a-zA-Z0-9_-]{6,15}$/.test(v) ? v : null;
+  } catch {
+    const id = input.trim();
+    // Reject search terms (spaces) — only accept real-looking video IDs
+    return /^[a-zA-Z0-9_-]{6,15}$/.test(id) ? id : null;
+  }
 }
 function getMood(scene, tension) {
   if (!scene) return "Choose a scene to begin";
@@ -165,11 +169,18 @@ function useYTPlayer(containerId, videoId, volume, isPlaying, reloadKey) {
     ref.current = new window.YT.Player(target, {
       videoId, height:"70", width:"100%",
       playerVars: { autoplay:1, loop:1, playlist:videoId, controls:0, modestbranding:1 },
-      events: { onReady(e) {
-        // Always start playing when explicitly loaded — mute trick for autoplay policy
-        e.target.mute(); e.target.playVideo();
-        setTimeout(() => { e.target.unMute(); e.target.setVolume(volRef.current); }, 250);
-      }},
+      events: {
+        onReady(e) {
+          e.target.mute(); e.target.playVideo();
+          setTimeout(() => { e.target.unMute(); e.target.setVolume(volRef.current); }, 250);
+        },
+        onError() {
+          // Invalid video ID — destroy cleanly so the wrapper div is reusable
+          try { ref.current?.destroy(); ref.current = null; } catch {}
+          const wrapper = document.getElementById(containerId);
+          if (wrapper) wrapper.innerHTML = "";
+        },
+      },
     });
     return () => { ref.current?.destroy(); ref.current = null; if (wrapper) wrapper.innerHTML = ""; };
   }, [ytReady, videoId, containerId, reloadKey]); // reloadKey forces restart even if URL unchanged
@@ -266,8 +277,10 @@ function useSpotifyAuth() {
 function useSpotifyPlayer(token) {
   const [ready, setReady]               = useState(false);
   const [currentTrack, setCurrentTrack] = useState(null);
+  const [nextTracks, setNextTracks]     = useState([]);
   const [isPaused, setIsPaused]         = useState(true);
   const [shuffle, setShuffle]           = useState(false);
+  const [repeat, setRepeat]             = useState("off"); // "off" | "context" | "track"
   const playerRef   = useRef(null);
   const deviceIdRef = useRef(null);
   const tokenRef    = useRef(token);
@@ -288,7 +301,9 @@ function useSpotifyPlayer(token) {
         if (!s) return;
         setIsPaused(s.paused);
         setShuffle(s.shuffle);
+        setRepeat(s.repeat_mode === 0 ? "off" : s.repeat_mode === 1 ? "context" : "track");
         if (s.track_window?.current_track) setCurrentTrack(s.track_window.current_track);
+        if (s.track_window?.next_tracks) setNextTracks(s.track_window.next_tracks.slice(0,3));
       });
       player.connect();
       playerRef.current = player;
@@ -334,6 +349,12 @@ function useSpotifyPlayer(token) {
     setShuffle(next);
     await spApi(`/me/player/shuffle?state=${next}`, "PUT");
   }
+  async function toggleRepeat() {
+    const modes = ["off","context","track"];
+    const next = modes[(modes.indexOf(repeat)+1)%modes.length];
+    setRepeat(next);
+    await spApi(`/me/player/repeat?state=${next}`, "PUT");
+  }
 
   function pause()   { playerRef.current?.pause(); }
   function resume()  { playerRef.current?.resume(); }
@@ -343,7 +364,7 @@ function useSpotifyPlayer(token) {
   const artistName = currentTrack?.artists?.[0]?.name;
   const albumName  = currentTrack?.album?.name;
 
-  return { ready, currentTrack, isPaused, shuffle, albumArt, artistName, albumName, play, pause, resume, setVol, skipNext, skipPrev, toggleShuffle, search };
+  return { ready, currentTrack, nextTracks, isPaused, shuffle, repeat, albumArt, artistName, albumName, play, pause, resume, setVol, skipNext, skipPrev, toggleShuffle, toggleRepeat, search };
 }
 
 async function compressImage(file) {
@@ -720,6 +741,52 @@ function StageScreen({ scenes, sceneData, activeSceneId, onSceneClick, tension, 
   );
 }
 
+function YouTubeTrackPanel({ label, input, setInput, onLoad, onClear, hasId, containerId, hint }) {
+  function openYTSearch() {
+    window.open(`https://www.youtube.com/results?search_query=${encodeURIComponent(hint)}`, "_blank", "noopener");
+  }
+  return (
+    <Card>
+      <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14 }}>
+        <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.18em",color:C.gold,textTransform:"uppercase" }}>{label}</div>
+        {hasId && <Btn variant="ghost" onClick={onClear} style={{ padding:"4px 10px",fontSize:10 }}>✕ Clear</Btn>}
+      </div>
+
+      {/* Search shortcut */}
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontSize:11,color:C.goldDim,marginBottom:7 }}>Find music for this scene:</div>
+        <button onClick={openYTSearch}
+          style={{ width:"100%",background:C.surfaceHigh,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px",color:C.goldMid,fontSize:12,cursor:"pointer",textAlign:"left",outline:"none",display:"flex",alignItems:"center",gap:8,transition:"border-color 0.2s" }}
+          onMouseEnter={e=>e.currentTarget.style.borderColor="rgba(232,217,160,0.3)"}
+          onMouseLeave={e=>e.currentTarget.style.borderColor=C.border}>
+          <span style={{ fontSize:14 }}>🔎</span>
+          <span style={{ flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>Search: "{hint}"</span>
+          <span style={{ fontSize:10,color:C.goldFaint,flexShrink:0 }}>Opens YouTube →</span>
+        </button>
+      </div>
+
+      {/* URL input */}
+      <div style={{ borderTop:`1px solid ${C.border}`,paddingTop:14 }}>
+        <div style={{ fontSize:11,color:C.goldDim,marginBottom:7 }}>Paste URL or video ID:</div>
+        <div style={{ display:"flex",gap:8 }}>
+          <TextInput
+            value={input} onChange={e=>setInput(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&onLoad()}
+            placeholder="https://youtube.com/watch?v=…"
+          />
+          <Btn variant="primary" onClick={onLoad} style={{ whiteSpace:"nowrap",flexShrink:0 }}>Load</Btn>
+        </div>
+        <div style={{ fontSize:10,color:C.goldFaint,marginTop:6,fontStyle:"italic" }}>
+          Tip: find a 1-hour loop on YouTube, copy the URL, paste above
+        </div>
+      </div>
+
+      {/* Player */}
+      {hasId && <div style={{ marginTop:12 }}><YTContainer id={containerId}/></div>}
+    </Card>
+  );
+}
+
 function AudioScreen({ activeScene, sceneData, musicId, ambientId, musicVol, setMusicVol, ambientVol, setAmbientVol, sfxVol, setSfxVol, spotifyVol, setSpotifyVol, isPlaying, soundboard, setSoundboard, onLoadMusic, onLoadAmbient, onClearMusic, onClearAmbient, musicInput, setMusicInput, ambientInput, setAmbientInput, triggerSfx, editingSfxIdx, setEditingSfxIdx, spotifyAuth, spotifyPlayer, spotifyInput, setSpotifyInput, onLoadSpotify }) {
   const [showSfxPlayer, setShowSfxPlayer] = useState(false);
 
@@ -734,23 +801,8 @@ function AudioScreen({ activeScene, sceneData, musicId, ambientId, musicVol, set
     <div>
       {/* Main tracks */}
       <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:20 }}>
-        {[
-          { label:"Music Track",     input:musicInput,   setInput:setMusicInput,   onLoad:onLoadMusic,   onClear:onClearMusic,   hasId:!!musicId,   containerId:"music-player",   hint:activeScene?.musicHint??"fantasy epic music 1 hour" },
-          { label:"Ambient Sound",   input:ambientInput, setInput:setAmbientInput, onLoad:onLoadAmbient, onClear:onClearAmbient, hasId:!!ambientId, containerId:"ambient-player", hint:activeScene?.ambientHint??"ambient sound 1 hour" },
-        ].map((p,i)=>(
-          <Card key={i}>
-            <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12 }}>
-              <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.18em",color:C.gold,textTransform:"uppercase" }}>{p.label}</div>
-              {p.hasId&&<Btn variant="ghost" onClick={p.onClear} style={{ padding:"3px 8px",fontSize:10 }}>Clear</Btn>}
-            </div>
-            <div style={{ display:"flex",gap:8,marginBottom:8 }}>
-              <TextInput value={p.input} onChange={e=>p.setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&p.onLoad()} placeholder="YouTube URL or video ID…"/>
-              <Btn variant="primary" onClick={p.onLoad} style={{ whiteSpace:"nowrap",flexShrink:0 }}>Load</Btn>
-            </div>
-            <div style={{ fontSize:11,color:C.goldFaint,fontStyle:"italic",marginBottom:4 }}>Search: {p.hint}</div>
-            {p.hasId&&<YTContainer id={p.containerId}/>}
-          </Card>
-        ))}
+        <YouTubeTrackPanel label="Music Track" input={musicInput} setInput={setMusicInput} onLoad={onLoadMusic} onClear={onClearMusic} hasId={!!musicId} containerId="music-player" hint={activeScene?.musicHint??"fantasy epic music 1 hour"}/>
+        <YouTubeTrackPanel label="Ambient Sound" input={ambientInput} setInput={setAmbientInput} onLoad={onLoadAmbient} onClear={onClearAmbient} hasId={!!ambientId} containerId="ambient-player" hint={activeScene?.ambientHint??"ambient sound 1 hour"}/>
       </div>
 
       {/* Volume controls */}
@@ -765,7 +817,9 @@ function AudioScreen({ activeScene, sceneData, musicId, ambientId, musicVol, set
 
       {/* Soundboard */}
       <Card>
-        <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.18em",color:C.gold,textTransform:"uppercase",marginBottom:16 }}>Soundboard <span style={{ fontSize:10,color:C.goldFaint,letterSpacing:"0.06em",textTransform:"none",marginLeft:8 }}>one-shot sounds</span></div>
+        <div style={{ fontFamily:"Cinzel,serif",fontSize:11,letterSpacing:"0.18em",color:C.gold,textTransform:"uppercase",marginBottom:16 }}>
+          Soundboard <span style={{ fontSize:10,color:C.goldFaint,letterSpacing:"0.06em",textTransform:"none",marginLeft:8 }}>one-shot sounds · click ✎ to configure</span>
+        </div>
         <div style={{ display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14 }}>
           {soundboard.map((slot,i)=>{
             const hasUrl = !!getYouTubeId(slot.url);
@@ -877,21 +931,48 @@ function SpotifyPanel({ auth, player, spotifyVol, setSpotifyVol, spotifyInput, s
           )}
 
           {/* Transport */}
-          <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:16 }}>
-            <button onClick={player.skipPrev} aria-label="Previous" style={{ background:"transparent",border:"none",color:C.goldDim,fontSize:20,cursor:"pointer",padding:"6px 10px",outline:"none" }}>⏮</button>
-            <button
-              onClick={player.isPaused ? player.resume : player.pause}
-              aria-label={player.isPaused?"Play":"Pause"}
-              style={{ background:"rgba(29,185,84,0.15)",border:"1px solid rgba(29,185,84,0.4)",borderRadius:"50%",width:44,height:44,color:"#1db954",fontSize:18,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",outline:"none",flexShrink:0 }}>
-              {player.isPaused ? "▶" : "⏸"}
+          <div style={{ display:"flex",alignItems:"center",gap:8,marginBottom:16,flexWrap:"wrap" }}>
+            <button onClick={player.skipPrev} aria-label="Previous track"
+              style={{ background:C.surfaceHigh,border:`1px solid ${C.border}`,borderRadius:8,color:C.goldMid,fontSize:18,cursor:"pointer",padding:"8px 12px",outline:"none",transition:"border-color 0.2s" }}>⏮</button>
+            <button onClick={player.isPaused?player.resume:player.pause} aria-label={player.isPaused?"Play":"Pause"}
+              style={{ background:"rgba(29,185,84,0.18)",border:"1px solid rgba(29,185,84,0.5)",borderRadius:"50%",width:46,height:46,color:"#1db954",fontSize:20,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",outline:"none",flexShrink:0 }}>
+              {player.isPaused?"▶":"⏸"}
             </button>
-            <button onClick={player.skipNext} aria-label="Next" style={{ background:"transparent",border:"none",color:C.goldDim,fontSize:20,cursor:"pointer",padding:"6px 10px",outline:"none" }}>⏭</button>
-            <button
-              onClick={player.toggleShuffle}
-              aria-label="Toggle shuffle" aria-pressed={player.shuffle}
-              style={{ background:"transparent",border:"none",color:player.shuffle?"#1db954":C.goldFaint,fontSize:18,cursor:"pointer",padding:"6px 10px",outline:"none",marginLeft:"auto" }}
-              title="Shuffle">🔀</button>
+            <button onClick={player.skipNext} aria-label="Next track"
+              style={{ background:C.surfaceHigh,border:`1px solid ${C.border}`,borderRadius:8,color:C.goldMid,fontSize:18,cursor:"pointer",padding:"8px 12px",outline:"none",transition:"border-color 0.2s" }}>⏭</button>
+
+            <div style={{ flex:1 }}/>
+
+            {/* Shuffle */}
+            <button onClick={player.toggleShuffle} aria-pressed={player.shuffle} aria-label="Toggle shuffle"
+              style={{ display:"flex",alignItems:"center",gap:5,background:player.shuffle?"rgba(29,185,84,0.15)":"transparent",border:`1px solid ${player.shuffle?"rgba(29,185,84,0.4)":C.border}`,borderRadius:8,color:player.shuffle?"#1db954":C.goldFaint,fontSize:11,fontFamily:"Cinzel,serif",letterSpacing:"0.08em",cursor:"pointer",padding:"7px 12px",outline:"none",transition:"all 0.2s" }}>
+              <span style={{ fontSize:14 }}>🔀</span> Shuffle{player.shuffle?" On":" Off"}
+            </button>
+
+            {/* Repeat */}
+            <button onClick={player.toggleRepeat} aria-label="Toggle repeat"
+              style={{ display:"flex",alignItems:"center",gap:5,background:player.repeat!=="off"?"rgba(29,185,84,0.15)":"transparent",border:`1px solid ${player.repeat!=="off"?"rgba(29,185,84,0.4)":C.border}`,borderRadius:8,color:player.repeat!=="off"?"#1db954":C.goldFaint,fontSize:11,fontFamily:"Cinzel,serif",letterSpacing:"0.08em",cursor:"pointer",padding:"7px 12px",outline:"none",transition:"all 0.2s" }}>
+              <span style={{ fontSize:14 }}>{player.repeat==="track"?"🔂":"🔁"}</span>
+              {player.repeat==="off"?"Repeat Off":player.repeat==="context"?"Repeat All":"Repeat One"}
+            </button>
           </div>
+
+          {/* Queue — next tracks */}
+          {player.nextTracks?.length>0&&(
+            <div style={{ marginBottom:16 }}>
+              <div style={{ fontSize:10,fontFamily:"Cinzel,serif",letterSpacing:"0.12em",color:C.goldFaint,textTransform:"uppercase",marginBottom:8 }}>Up Next</div>
+              {player.nextTracks.map((t,i)=>(
+                <div key={i} style={{ display:"flex",alignItems:"center",gap:10,padding:"7px 0",borderBottom:i<player.nextTracks.length-1?`1px solid ${C.border}`:"none" }}>
+                  {t.album?.images?.[2]?.url&&<img src={t.album.images[2].url} alt="" style={{ width:30,height:30,borderRadius:4,flexShrink:0 }}/>}
+                  <div style={{ flex:1,minWidth:0 }}>
+                    <div style={{ fontSize:12,color:C.goldMid,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis" }}>{t.name}</div>
+                    <div style={{ fontSize:10,color:C.goldFaint }}>{t.artists?.[0]?.name}</div>
+                  </div>
+                  <span style={{ fontSize:10,color:C.goldFaint,flexShrink:0 }}>#{i+1}</span>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Volume */}
           <div style={{ marginBottom:16 }}>
@@ -1642,7 +1723,7 @@ export default function App() {
         </div>
 
         {/* Tab panels */}
-        <div role="tabpanel" id={`panel-${activeTab}`}>
+        <div role="tabpanel" id={`panel-${activeTab}`} style={{ minHeight:"65vh" }}>
           {activeTab==="stage"&&(
             <StageScreen
               scenes={scenes} sceneData={sceneData} activeSceneId={activeSceneId}
