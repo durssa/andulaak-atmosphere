@@ -71,6 +71,15 @@ Copy `.env.example` to `.env.local` to bake keys into a local build.
 
 If a Google Maps key is shipped, restrict it to the site's URL (HTTP referrer restriction) in Google Cloud Console.
 
+### Site address
+
+The workflow works out the base path on its own:
+
+- Default: `https://<user>.github.io/<repository>/`. Renaming the repository (for example to `encore`) changes the address on the next deploy; GitHub redirects the old name.
+- Custom domain: create a DNS `CNAME` record for your subdomain pointing at `<user>.github.io`, set the repository variable `PAGES_CUSTOM_DOMAIN` to that hostname, and run the workflow. It writes the `CNAME` file and builds with a root base path. Then confirm the domain under Settings → Pages.
+
+After changing the address, update the redirect URIs registered with Spotify and Supabase to the new one (Settings in the app shows the exact value).
+
 ## Project layout
 
 ```

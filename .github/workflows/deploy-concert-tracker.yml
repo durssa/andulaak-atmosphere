@@ -31,10 +31,23 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
+      # Base path: "/" for a custom domain or a <user>.github.io repo, otherwise "/<repo>/".
+      # Set the repository variable PAGES_CUSTOM_DOMAIN (Settings → Secrets and variables → Actions → Variables)
+      # to publish at your own domain; point a DNS CNAME for it at durssa.github.io.
+      - name: Resolve site address
+        id: site
+        shell: bash
+        run: |
+          domain="${{ vars.PAGES_CUSTOM_DOMAIN }}"
+          repo="${{ github.event.repository.name }}"
+          if [ -n "$domain" ] || [[ "$repo" == *.github.io ]]; then base="/"; else base="/$repo/"; fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "cname=$domain" >> "$GITHUB_OUTPUT"
+          echo "Site base path: $base ${domain:+(custom domain: $domain)}"
       - name: Build
         run: npm run build
         env:
-          VITE_BASE: /${{ github.event.repository.name }}/
+          VITE_BASE: ${{ steps.site.outputs.base }}
           # Optional: add these as repository secrets (Settings → Secrets and variables → Actions)
           # to ship keys with the build. Users can also enter keys at runtime in the app's Settings page.
           VITE_TICKETMASTER_API_KEY: ${{ secrets.TICKETMASTER_API_KEY }}
@@ -52,5 +65,6 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./apps/concert-tracker/dist
           publish_branch: gh-pages
+          cname: ${{ steps.site.outputs.cname }}
           force_orphan: true
           commit_message: 'Deploy concert tracker from ${{ github.sha }}'
