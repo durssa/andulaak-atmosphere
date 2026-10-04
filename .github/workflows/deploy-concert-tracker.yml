@@ -2,9 +2,9 @@ name: Deploy Concert Tracker to GitHub Pages
 
 on:
   push:
-    branches: [master, claude/concert-tracker]
+    branches: [master]
     paths:
-      - 'concert-tracker/**'
+      - 'apps/concert-tracker/**'
       - '.github/workflows/deploy-concert-tracker.yml'
   workflow_dispatch:
 
@@ -20,14 +20,14 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: concert-tracker
+        working-directory: apps/concert-tracker
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: concert-tracker/package-lock.json
+          cache-dependency-path: apps/concert-tracker/package-lock.json
       - run: npm ci
       - run: npm run lint
       - run: npm test
@@ -39,6 +39,8 @@ jobs:
           # to ship keys with the build. Users can also enter keys at runtime in the app's Settings page.
           VITE_TICKETMASTER_API_KEY: ${{ secrets.TICKETMASTER_API_KEY }}
           VITE_GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+          VITE_SEATGEEK_CLIENT_ID: ${{ secrets.SEATGEEK_CLIENT_ID }}
+          VITE_SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
       - name: SPA fallback
         run: cp dist/index.html dist/404.html
       # Publishes ./dist to the gh-pages branch. GitHub serves that branch at
@@ -46,7 +48,7 @@ jobs:
       - uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./concert-tracker/dist
+          publish_dir: ./apps/concert-tracker/dist
           publish_branch: gh-pages
           force_orphan: true
           commit_message: 'Deploy concert tracker from ${{ github.sha }}'

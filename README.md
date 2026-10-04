@@ -1,14 +1,12 @@
-# andulaak-atmosphere
+# Apps
 
-This repository holds two apps:
+A small collection of browser-only web apps. Each one lives in its own folder under `apps/`, has its own `package.json`, and runs with `npm install && npm run dev`.
 
-| App | Path | Live |
+| App | What it does | Live |
 | --- | --- | --- |
-| **Andulaak Atmosphere** — tabletop session ambience (scenes, YouTube/Spotify audio, soundboard) | repository root | — |
-| **Encore — Concert Tracker** — discover concerts via Ticketmaster + Bandsintown, map them with Google Maps or OpenStreetMap, track the shows you're going to | [`concert-tracker/`](concert-tracker/) | https://durssa.github.io/andulaak-atmosphere/ |
+| [Encore](apps/concert-tracker/) | Concert tracker: find shows via Ticketmaster, SeatGeek and Bandsintown, import artists from Spotify, see everything on a map, and keep track of the concerts you're going to. | https://durssa.github.io/andulaak-atmosphere/ |
+| [Atmosphere](apps/atmosphere/) | Ambience controller for tabletop sessions: scenes, YouTube and Spotify audio, soundboard, session planning. | — |
 
-See [`concert-tracker/README.md`](concert-tracker/README.md) for the concert tracker's features, integrations, API-key setup and deployment details.
+## Deployment
 
-## Atmosphere app (root)
-
-React + Vite. `npm install && npm run dev` from the repository root.
+`.github/workflows/deploy-concert-tracker.yml` lints, tests and builds Encore on every push to `master` that touches `apps/concert-tracker/`, then publishes the build to the `gh-pages` branch, which GitHub Pages serves. API keys can be added as repository secrets (see the app README) or entered by users inside the app.
