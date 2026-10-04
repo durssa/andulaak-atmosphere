@@ -28,6 +28,7 @@ Light, product-style interface (dark mode follows the system or the in-app setti
 | [Leaflet](https://leafletjs.com/) + [OpenStreetMap](https://www.openstreetmap.org/) / [CARTO](https://carto.com/attributions) tiles | Map rendering when no Google key is set | No |
 | [Nominatim](https://nominatim.org/) | Geocoding when no Google key is set | No |
 | Browser Geolocation | "Use my location" | No |
+| [Supabase](https://supabase.com/) | Optional accounts and cross-device sync (email link, Google or Spotify sign-in, Postgres with row-level security) | Optional. Project URL and anon key in **Settings** or `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` |
 | Google Maps directions links, Google Calendar links, iCalendar export | Getting there and remembering | No |
 
 Everything runs in the browser; there is no backend. Keys you enter in Settings never leave your device except in requests to the provider they belong to.
@@ -39,6 +40,16 @@ Artist search (Bandsintown), following artists, tracking, calendar export and th
 ### Other ticket sources
 
 StubHub's API is limited to approved partners, and TickPick, AXS and Dice have no public API, so they are not integrated. SeatGeek listings already include many resale tickets.
+
+## Accounts and sync
+
+By default everything is stored in the browser (localStorage) and can be moved with the backup export. To give people accounts and cross-device sync, point the app at a [Supabase](https://supabase.com/) project:
+
+1. Create a free Supabase project and run `supabase/schema.sql` in its SQL editor. It creates `tracked_events`, `followed_artists` and `user_settings` with row-level security, so each person can only read and write their own rows.
+2. In Authentication → URL configuration, add the app URL (`https://durssa.github.io/andulaak-atmosphere/`) to Redirect URLs. Enable Google and Spotify under Providers if you want those sign-in buttons; email sign-in links work out of the box.
+3. Put the project URL and anon key in Settings → Account and sync, or ship them with the build as the `SUPABASE_URL` and `SUPABASE_ANON_KEY` repository secrets.
+
+How it behaves: the browser stays the working copy, so the app is fully usable offline and signed out. When someone signs in, local data is merged into the account (newer record wins, artists are a union, deletions are remembered as tombstones) and every later change is written through. API keys and the Spotify session are never synced; they stay on the device.
 
 ## Development
 
@@ -74,6 +85,9 @@ src/
     dates.js, geo.js    date/countdown and distance helpers
     ics.js              iCalendar + Google Calendar export
     storage.js          localStorage-backed state, backup import/export
+    sync.js             merge rules and the account store (Supabase)
+    api/supabase.js     lazy Supabase client, sign-in helpers
+supabase/schema.sql     tables and row-level security for sync
   __tests__/            vitest unit tests + API fixtures
 e2e/smoke.mjs           Playwright smoke test
 ```

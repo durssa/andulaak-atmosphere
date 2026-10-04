@@ -49,7 +49,8 @@ export async function handleSpotifyRedirect(clientId) {
   const clean = () => window.history.replaceState({}, '', `${window.location.pathname}${back}`)
   if (error) { clean(); throw new ApiError(`Spotify sign-in was cancelled (${error})`, { provider: 'Spotify' }) }
   const verifier = sessionStorage.getItem('encore.spotify.verifier')
-  if (!verifier) { clean(); throw new ApiError('Spotify sign-in could not be completed. Please try again.', { provider: 'Spotify' }) }
+  // A ?code= without our verifier belongs to another sign-in flow (Supabase auth); leave it alone.
+  if (!verifier) return null
   const d = await tokenRequest({ client_id: clientId, grant_type: 'authorization_code', code, redirect_uri: spotifyRedirectUri(), code_verifier: verifier })
   sessionStorage.removeItem('encore.spotify.verifier')
   write({ access: d.access_token, refresh: d.refresh_token, expires: Date.now() + (d.expires_in - 60) * 1000, clientId })

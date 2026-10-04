@@ -8,6 +8,7 @@ import { geocode, reverseGeocode } from '../lib/api/index.js'
 import { getCurrentPosition } from '../lib/geo.js'
 import { exportAllData, importAllData } from '../lib/storage.js'
 import { beginSpotifyLogin, spotifyLogout, spotifyRedirectUri, spotifySession } from '../lib/api/spotify.js'
+import { getSupabase, signInWithEmail, signInWithProvider, supabaseConfigured, authRedirectUri } from '../lib/api/supabase.js'
 
 function KeyField({ id, label, value, onChange, placeholder, help }) {
   const [show, setShow] = useState(false)
@@ -24,6 +25,69 @@ function KeyField({ id, label, value, onChange, placeholder, help }) {
 function TestResult({ r }) {
   if (!r || r.loading) return null
   return <span className={`status-line ${r.ok ? 'ok' : 'err'}`} role="status"><Icon name={r.ok ? 'check-circle' : 'alert'} size={14} />{r.text}</span>
+}
+
+function AccountSection() {
+  const { settings, setSettings, notify, account, syncState, syncNow, signOutAccount } = useApp()
+  const [email, setEmail] = useState('')
+  const [sent, setSent] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const configured = supabaseConfigured(settings)
+  const [showSetup, setShowSetup] = useState(!configured)
+
+  const withClient = async (fn) => {
+    setBusy(true)
+    try { const c = await getSupabase(settings); if (!c) throw new Error('Account service is not configured'); await fn(c) } catch (e) { notify(e.message, 'error') } finally { setBusy(false) }
+  }
+  const sendLink = () => withClient(async (c) => { await signInWithEmail(c, email.trim()); setSent(true) })
+
+  return (
+    <section className="card" aria-labelledby="s-account">
+      <div className="card-head"><h2 id="s-account">Account and sync</h2>{account ? <span className="tag tag-success">Signed in</span> : configured ? <span className="tag">Signed out</span> : <span className="tag">Device only</span>}</div>
+      {account ? (
+        <>
+          <div className="row" style={{ marginBottom: 10 }}>
+            <span className="avatar sm" aria-hidden="true">{account.name.charAt(0).toUpperCase()}{account.avatar && <img src={account.avatar} alt="" />}</span>
+            <div><div style={{ fontWeight: 600 }}>{account.name}</div><div className="faint small">{account.email || account.provider}</div></div>
+          </div>
+          <p className="muted small" style={{ marginBottom: 10 }}>Your tracked concerts, followed artists and preferences are saved to your account and kept in sync on every device you sign in on. API keys stay on this device only.</p>
+          <div className="row">
+            <Button size="sm" icon="refresh" onClick={syncNow} loading={syncState.status === 'syncing'}>Sync now</Button>
+            <Button size="sm" variant="ghost" icon="log-out" onClick={signOutAccount}>Sign out</Button>
+            <span className={`status-line ${syncState.status === 'error' ? 'err' : syncState.status === 'synced' ? 'ok' : ''}`} role="status">
+              {syncState.status === 'error' ? <><Icon name="alert" size={14} />{syncState.error}</> : syncState.at ? <><Icon name="check-circle" size={14} />Synced {new Date(syncState.at).toLocaleTimeString()}</> : null}
+            </span>
+          </div>
+        </>
+      ) : configured ? (
+        <>
+          <p className="muted small" style={{ marginBottom: 12 }}>Sign in to keep your concerts and artists across devices. What's on this device is merged into your account the first time you sign in.</p>
+          <Field label="Email" id="acct-email" help={sent ? `Check ${email} for a sign-in link.` : 'We send a one-time sign-in link. No password needed.'}>
+            <div className="input-group">
+              <input id="acct-email" className="input" type="email" autoComplete="email" placeholder="you@example.com" value={email} onChange={(e) => { setEmail(e.target.value); setSent(false) }} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); sendLink() } }} />
+              <Button variant="primary" onClick={sendLink} loading={busy} disabled={!/.+@.+\..+/.test(email)}>Send link</Button>
+            </div>
+          </Field>
+          <div className="row" style={{ marginTop: 12 }}>
+            <Button size="sm" icon="globe" onClick={() => withClient((c) => signInWithProvider(c, 'google'))} disabled={busy}>Continue with Google</Button>
+            <Button size="sm" icon="music" onClick={() => withClient((c) => signInWithProvider(c, 'spotify'))} disabled={busy}>Continue with Spotify</Button>
+          </div>
+          <p className="help" style={{ marginTop: 8 }}>Google and Spotify sign-in only work once those providers are enabled in your Supabase project.</p>
+        </>
+      ) : (
+        <p className="muted small">Without an account service, everything is saved in this browser only. Export a backup below to move it to another device, or set up sync.</p>
+      )}
+      <div className="divider" />
+      <button type="button" className="link-btn small" onClick={() => setShowSetup((v) => !v)} aria-expanded={showSetup}>{showSetup ? 'Hide' : 'Show'} sync service setup</button>
+      {showSetup && (
+        <div className="stack" style={{ marginTop: 10 }}>
+          <p className="muted small">Encore syncs through a <a href="https://supabase.com/" target="_blank" rel="noopener noreferrer">Supabase</a> project you own (free tier is plenty). Create a project, run <code>supabase/schema.sql</code> from the repository in its SQL editor, add <code>{authRedirectUri()}</code> to Authentication → URL configuration → Redirect URLs, then paste the project URL and anon key here. The anon key is safe to share; row-level security keeps each person's rows private.</p>
+          <Field label="Project URL" id="sbUrl"><input id="sbUrl" className="input" placeholder="https://xxxx.supabase.co" value={settings.supabaseUrl} onChange={(e) => setSettings({ supabaseUrl: e.target.value.trim() })} autoComplete="off" spellCheck={false} /></Field>
+          <KeyField id="sbKey" label="Anon key" value={settings.supabaseAnonKey} onChange={(v) => setSettings({ supabaseAnonKey: v })} placeholder="eyJ…" />
+        </div>
+      )}
+    </section>
+  )
 }
 
 export default function SettingsView() {
@@ -132,6 +196,7 @@ export default function SettingsView() {
         </div>
 
         <div className="stack">
+          <AccountSection />
           <section className="card" aria-labelledby="s-home">
             <div className="card-head"><h2 id="s-home">Location and units</h2></div>
             <Field label="Home city" id="home" help={settings.home ? `Saved: ${settings.home.label}. Used as the default search area and to sort shows by distance.` : 'Used as the default search area and to sort shows by distance.'}>
@@ -156,7 +221,7 @@ export default function SettingsView() {
 
           <section className="card" aria-labelledby="s-data">
             <div className="card-head"><h2 id="s-data">Your data</h2></div>
-            <p className="muted small" style={{ marginBottom: 12 }}>Tracked concerts, followed artists and settings live in this browser. Export a backup to move them to another device.</p>
+            <p className="muted small" style={{ marginBottom: 12 }}>Export a backup of your tracked concerts, followed artists and settings, or restore one. Clearing removes everything from this browser only; an account keeps its own copy.</p>
             <div className="row">
               <Button size="sm" icon="download" onClick={doExport}>Export backup</Button>
               <Button size="sm" icon="upload" onClick={() => fileRef.current?.click()}>Import backup</Button>

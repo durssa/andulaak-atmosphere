@@ -20,6 +20,8 @@ export const DEFAULT_SETTINGS = {
   bitAppId: import.meta.env.VITE_BANDSINTOWN_APP_ID || 'encore-concert-tracker',
   sgClientId: import.meta.env.VITE_SEATGEEK_CLIENT_ID || '',
   spotifyClientId: import.meta.env.VITE_SPOTIFY_CLIENT_ID || '',
+  supabaseUrl: import.meta.env.VITE_SUPABASE_URL || '',
+  supabaseAnonKey: import.meta.env.VITE_SUPABASE_ANON_KEY || '',
   theme: 'system', // system | light | dark
   units: 'km',
   mapProvider: 'auto', // auto | google | leaflet
