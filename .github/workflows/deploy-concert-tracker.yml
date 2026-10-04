@@ -9,16 +9,14 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -37,25 +35,18 @@ jobs:
         run: npm run build
         env:
           VITE_BASE: /${{ github.event.repository.name }}/
-          # Optional: add these as repository secrets (Settings → Secrets → Actions) to ship keys with the build.
-          # Keys can also be entered by users at runtime in the app's Settings page.
+          # Optional: add these as repository secrets (Settings → Secrets and variables → Actions)
+          # to ship keys with the build. Users can also enter keys at runtime in the app's Settings page.
           VITE_TICKETMASTER_API_KEY: ${{ secrets.TICKETMASTER_API_KEY }}
           VITE_GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
       - name: SPA fallback
         run: cp dist/index.html dist/404.html
-      - uses: actions/configure-pages@v5
+      # Publishes ./dist to the gh-pages branch. GitHub serves that branch at
+      # https://<owner>.github.io/<repo>/ (Settings → Pages → Source: gh-pages / root).
+      - uses: peaceiris/actions-gh-pages@v4
         with:
-          enablement: true
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: concert-tracker/dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./concert-tracker/dist
+          publish_branch: gh-pages
+          force_orphan: true
+          commit_message: 'Deploy concert tracker from ${{ github.sha }}'

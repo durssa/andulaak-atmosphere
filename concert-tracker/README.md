@@ -46,7 +46,7 @@ Copy `.env.example` to `.env.local` to bake keys into a local build.
 
 ## Deployment
 
-`.github/workflows/deploy-concert-tracker.yml` builds the app and publishes it to GitHub Pages on every push to `master` that touches `concert-tracker/`. The workflow enables Pages on first run. To ship API keys with the build, add `TICKETMASTER_API_KEY` and/or `GOOGLE_MAPS_API_KEY` as repository Actions secrets; otherwise users enter keys in the app's Settings page.
+`.github/workflows/deploy-concert-tracker.yml` lints, tests and builds the app on every push to `master` that touches `concert-tracker/`, then publishes `dist/` to the `gh-pages` branch, which GitHub Pages serves at the URL above (Settings → Pages → Source: *Deploy from a branch*, `gh-pages`, `/ (root)`). To ship API keys with the build, add `TICKETMASTER_API_KEY` and/or `GOOGLE_MAPS_API_KEY` as repository Actions secrets; otherwise users enter keys in the app's Settings page.
 
 If a Google Maps key is shipped, restrict it to the site's URL (HTTP referrer restriction) in Google Cloud Console.
 

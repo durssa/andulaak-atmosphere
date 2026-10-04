@@ -87,6 +87,11 @@ describe('artists', () => {
     const r = await upcomingForArtist({ settings: settingsKey, artist: 'Radiohead' })
     expect(r.events.map((e) => e.id)).toEqual(['tm:Z7r9jZ1AdFUoT'])
   })
+  it('treats a Bandsintown "not found" body as no results, not an error', async () => {
+    mockFetch([['rest.bandsintown.com', { errorMessage: '[NotFound] The artist was not found' }], ['app.ticketmaster.com', tmResponse([tmEvent])]])
+    const r = await discover({ settings: settingsKey, keyword: 'jazz festival' })
+    expect(r.warnings).toEqual([]); expect(r.events).toHaveLength(1)
+  })
   it('encodes awkward artist names for Bandsintown', async () => {
     mockFetch([['rest.bandsintown.com', []]])
     await upcomingForArtist({ settings: settingsNoKey, artist: 'AC/DC' })

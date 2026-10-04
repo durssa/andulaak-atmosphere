@@ -24,7 +24,8 @@ export async function artistInfo({ appId, artist }) {
 export async function artistEvents({ appId, artist, range = 'upcoming' }) {
   const data = await fetchJson(`${BASE}/artists/${enc(artist)}/events?app_id=${encodeURIComponent(appId)}&date=${range}`, { provider: 'Bandsintown' })
   if (!Array.isArray(data)) {
-    if (data?.errorMessage || data?.error) throw new ApiError(data.errorMessage || data.error, { provider: 'Bandsintown' })
+    const msg = data?.errorMessage || data?.error
+    if (msg) throw new ApiError(msg, { provider: 'Bandsintown', status: /not.?found/i.test(msg) ? 404 : undefined })
     return []
   }
   return data.map((e) => normalizeBandsintownEvent(e, artist)).filter(Boolean)
