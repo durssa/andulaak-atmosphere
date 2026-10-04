@@ -1,0 +1,61 @@
+name: Deploy Concert Tracker to GitHub Pages
+
+on:
+  push:
+    branches: [master, claude/concert-tracker]
+    paths:
+      - 'concert-tracker/**'
+      - '.github/workflows/deploy-concert-tracker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: concert-tracker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: concert-tracker/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - name: Build
+        run: npm run build
+        env:
+          VITE_BASE: /${{ github.event.repository.name }}/
+          # Optional: add these as repository secrets (Settings → Secrets → Actions) to ship keys with the build.
+          # Keys can also be entered by users at runtime in the app's Settings page.
+          VITE_TICKETMASTER_API_KEY: ${{ secrets.TICKETMASTER_API_KEY }}
+          VITE_GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+      - name: SPA fallback
+        run: cp dist/index.html dist/404.html
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: concert-tracker/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
